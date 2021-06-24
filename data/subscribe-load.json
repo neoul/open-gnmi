@@ -1,0 +1,57 @@
+{
+   "openconfig-messages:messages": {
+      "config": {
+         "severity": "ERROR"
+      },
+      "state": {
+         "severity": "ERROR",
+         "message": {
+            "msg" : "Messages presents here.",
+            "priority": 10
+         }
+      }
+   },
+   "openconfig-interfaces:interfaces": {
+      "interface": [
+         {
+            "name": "p1",
+            "config": {
+               "name": "p1",
+               "type": "iana-if-type:ethernetCsmacd",
+               "mtu": 1516,
+               "loopback-mode": false,
+               "description": "Interface#1",
+               "enabled": true
+            },
+            "state": {
+               "counters": {
+                  "in-pkts": 100,
+                  "out-pkts": 100
+               }
+            }
+         },
+         {
+            "name": "p2",
+            "config": {
+               "name": "p2",
+               "type": "iana-if-type:ethernetCsmacd",
+               "mtu": 1516,
+               "loopback-mode": false,
+               "description": "n/a",
+               "enabled": true
+            }
+         },
+         {
+            "name": "p3",
+            "config": {
+               "name": "p3",
+               "type": "iana-if-type:ethernetCsmacd",
+               "mtu": 1516,
+               "loopback-mode": false,
+               "description": "n/a",
+               "enabled": true
+            }
+         }
+      ]
+   }
+}

@@ -1,0 +1,97 @@
+##@ 0 SubscribeRequest
+aliases: <
+  alias: <
+    path: <
+      elem: <
+        name: "messages"
+      >
+      elem: <
+        name: "state"
+      >
+      elem: <
+        name: "message"
+      >
+    >
+    alias: "syslog"
+  >
+>
+
+##@ Error
+code: 3
+
+##@ SubscribeRequest
+aliases: <
+  alias: <
+    path: <
+      elem: <
+        name: "messages"
+      >
+      elem: <
+        name: "state"
+      >
+      elem: <
+        name: "message"
+      >
+    >
+    alias: "#syslog"
+  >
+>
+
+##@ SubscribeResponse
+update: <
+  prefix: <
+    elem: <
+      name: "messages"
+    >
+    elem: <
+      name: "state"
+    >
+    elem: <
+      name: "message"
+    >
+  >
+  alias: "#syslog"
+>
+
+##@ SubscribeRequest
+subscribe: <
+  prefix: <
+    target: "test"
+    elem: <
+      name: "#syslog"
+    >
+  >
+  subscription: <
+    path: <
+      elem: <
+        name: "msg"
+      >
+    >
+    mode: ON_CHANGE
+    # sample_interval: 1000000000
+  >
+  mode: STREAM
+>
+
+##@ SubscribeResponse
+update:{prefix:{elem:{name:"#syslog"}  target:"test"}  update:{path:{elem:{name:"msg"}}  val:{string_val:"Messages presents here."}}}
+
+
+##@ SubscribeResponse
+sync_response: true
+
+
+##@ Update
+{
+  "messages": {
+    "state": {
+      "message": {
+        "msg": "message updated",
+        "priority": 2
+      }
+    }
+  }
+}
+
+##@ SubscribeResponse
+update:{prefix:{elem:{name:"#syslog"} target:"test"} update:{path:{elem:{name:"msg"}} val:{string_val:"message updated"}} delete:{elem:{name:"msg"}}}
