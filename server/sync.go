@@ -23,7 +23,7 @@ type SyncCallback interface {
 }
 
 // SyncCallbackOption is used to configure the data synchronization options
-// of the gNMI server at startup. SyncMinInterval (unit: sec) is the minimum interval
+// of the gNMI server at startup. SyncMinInterval is the minimum interval
 // between two sync requests for each specified path. SyncCallback is the callback
 // interface invoked by the gNMI server upon the sync request to request the data updates
 // of the specified path to the system.
@@ -49,10 +49,13 @@ func hasSyncMinInterval(opts []Option) time.Duration {
 	for _, o := range opts {
 		switch v := o.(type) {
 		case SyncCallbackOption:
-			return v.MinInterval * time.Second
+			if v.MinInterval == 0 {
+				return time.Second
+			}
+			return v.MinInterval
 		}
 	}
-	return 1 * time.Second
+	return time.Second
 }
 
 type syncTime struct {

@@ -11,13 +11,14 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/neoul/open-gnmi/server"
+	"github.com/neoul/yangtree"
 	"github.com/spf13/pflag"
 )
 
 var sampleInterval = pflag.Duration("sample-interval", time.Second, "the sampling time of nic statistics in sec")
 
-// IfStats - Interface statistics
-type IfStats struct {
+// ifStats - Interface statistics
+type ifStats struct {
 	Name           string
 	Type           string
 	Mtu            uint16
@@ -43,7 +44,7 @@ type IfStats struct {
 	TxCollisions   uint64
 }
 
-func (ifstats *IfStats) MarshalJSON() ([]byte, error) {
+func (ifstats *ifStats) MarshalJSON() ([]byte, error) {
 	if ifstats == nil {
 		return []byte("{}"), nil
 	}
@@ -89,13 +90,7 @@ func (ifstats *IfStats) MarshalJSON() ([]byte, error) {
 	}
 
 	jsonstr.WriteString(`}`)
-	fmt.Println(jsonstr.String())
 	return []byte(jsonstr.String()), nil
-}
-
-// IfInfo - for NIC statistic
-type IfInfo struct {
-	Ifstats map[string]*IfStats
 }
 
 func split(s string) []string {
@@ -120,11 +115,11 @@ func mask2prefix(maskstr string) int {
 	return p
 }
 
-func newIfStats(ifinfo string) *IfStats {
+func newIfStats(ifinfo string) *ifStats {
 	if ifinfo == "" {
 		return nil
 	}
-	ifs := &IfStats{}
+	ifs := &ifStats{}
 	defer func() {
 		if r := recover(); r != nil {
 			ifs = nil
@@ -184,14 +179,14 @@ func newIfStats(ifinfo string) *IfStats {
 	return ifs
 }
 
-func collectIfstats(name string) ([]*IfStats, error) {
+func collectIfstats(name string) ([]*ifStats, error) {
 	if name == "" {
 		output, err := exec.Command("ifconfig").Output()
 		if err != nil {
 			return nil, err
 		}
 		iflist := strings.Split(string(output), "\n\n")
-		ifstats := make([]*IfStats, 0, len(iflist))
+		ifstats := make([]*ifStats, 0, len(iflist))
 		for _, ifentry := range iflist {
 			if e := newIfStats(ifentry); e != nil {
 				ifstats = append(ifstats, e)
@@ -211,20 +206,23 @@ func collectIfstats(name string) ([]*IfStats, error) {
 	ifentry := string(output)
 	e := newIfStats(ifentry)
 	if e != nil {
-		return []*IfStats{e}, nil
+		return []*ifStats{e}, nil
 	}
 	return nil, fmt.Errorf("%q not found", name)
 }
 
-func pollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done chan bool) {
+func (system *System) pollingIfstats() {
+	server := system.Server
+	if server == nil {
+		return
+	}
 	stats, _ := collectIfstats("") // collect all
 	for _, entry := range stats {
-		ifinfo.Ifstats[entry.Name] = entry
 		b, err := json.Marshal(entry)
 		if err != nil {
 			glog.Errorf("error in marshaling ifstats: %v", err)
 		}
-		err = s.Write(fmt.Sprintf("/interfaces/interface[name=%s]", entry.Name), string(b))
+		err = server.Write(fmt.Sprintf("/interfaces/interface[name=%s]", entry.Name), string(b))
 		if err != nil {
 			glog.Errorf("error in writing: %v", err)
 		}
@@ -232,38 +230,72 @@ func pollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done 
 
 	for {
 		select {
-		case <-done:
+		case <-system.Done:
 			return
-		case <-ticker.C:
+		case <-system.Ticker.C:
 			stats, _ = collectIfstats("")
 			for _, entry := range stats {
-				ifinfo.Ifstats[entry.Name] = entry
 				b, err := json.Marshal(entry)
 				if err != nil {
 					glog.Errorf("error in marshaling ifstats: %v", err)
 				}
-				err = s.Write(fmt.Sprintf("/interfaces/interface[name=%s]", entry.Name), string(b))
+				err = server.Write(fmt.Sprintf("/interfaces/interface[name=%s]", entry.Name), string(b))
 				if err != nil {
 					glog.Errorf("error in writing: %v", err)
 				}
 			}
-			b, _ := s.Root.MarshalJSON()
-			fmt.Println(string(b))
+			// b, _ := s.Root.MarshalJSON()
+			// fmt.Println(string(b))
 		}
 	}
 }
 
-// Subsystem() collects and populates the interface data to the gNMI target.
-func Subsystem(s *server.Server) error {
-	done := make(chan bool)
-	ifinfo := &IfInfo{Ifstats: make(map[string]*IfStats)}
-	var ticker *time.Ticker
-	if *sampleInterval > 0 {
-		ticker = time.NewTicker(*sampleInterval)
-	} else {
-		ticker = time.NewTicker(time.Second)
-		ticker.Stop()
+// NewSystem() collects and populates the interface data to the gNMI target.
+func NewSystem() *System {
+	system := &System{
+		Done: make(chan bool),
 	}
-	go pollingIfstats(s, ifinfo, ticker, done)
+	if *sampleInterval > 0 {
+		system.Ticker = time.NewTicker(*sampleInterval)
+	} else {
+		system.Ticker = time.NewTicker(time.Second)
+		system.Ticker.Stop()
+	}
+	return system
+}
+
+func (system *System) Start(server *server.Server) error {
+	system.Server = server
+	go system.pollingIfstats()
+	return nil
+}
+
+type System struct {
+	Done   chan bool
+	Ticker *time.Ticker
+	Server *server.Server
+}
+
+func (system *System) SyncCallback(path ...string) error {
+	if system.Server == nil {
+		return nil
+	}
+	for i := range path {
+		node, _ := yangtree.Find(system.Server.Root, path[i])
+		for j := range node {
+			name := node[j].GetValueString("name")
+			stats, _ := collectIfstats(name)
+			for _, entry := range stats {
+				b, err := json.Marshal(entry)
+				if err != nil {
+					glog.Errorf("error in marshaling ifstats: %v", err)
+				}
+				err = system.Server.Write(fmt.Sprintf("/interfaces/interface[name=%s]", entry.Name), string(b))
+				if err != nil {
+					glog.Errorf("error in writing: %v", err)
+				}
+			}
+		}
+	}
 	return nil
 }

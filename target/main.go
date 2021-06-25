@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"time"
 
 	"flag"
 
@@ -67,6 +68,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	subsystem := NewSystem()
+	gnmiOptions := []server.Option{
+		server.SyncCallbackOption{SyncCallback: subsystem, MinInterval: time.Second * 3},
+	}
+
 	opts, err := credentials.ServerCredentials(*ca, *crt, *key, *skipVerify, *insecure)
 	if err != nil {
 		glog.Exitf("server credential loading failed: %v", err)
@@ -75,10 +81,16 @@ func main() {
 		f, d, e := yangfiles()
 		yang, dir, excludes = &f, &d, &e
 	}
-	gnmiserver, err := server.NewServer(*yang, *dir, *excludes)
+	gnmiserver, err := server.NewServer(*yang, *dir, *excludes, gnmiOptions...)
 	if err != nil {
 		glog.Exitf("gnmi new server failed: %v", err)
 	}
+
+	gnmiserver.RegisterSync("/interfaces/interface")
+	if err := subsystem.Start(gnmiserver); err != nil {
+		glog.Exitf("start subsystem failed: %v", err)
+	}
+
 	if *pathPrint {
 		ss := yangtree.CollectSchemaEntries(gnmiserver.RootSchema, true)
 		for i := range ss {
@@ -96,11 +108,6 @@ func main() {
 		if err != nil {
 			glog.Exitf("error in loading startup: %v", err)
 		}
-	}
-
-	err = Subsystem(gnmiserver)
-	if err != nil {
-		glog.Exitf("error in subsystem loading: %v", err)
 	}
 
 	// opts = append(opts, grpc.UnaryInterceptor(login.UnaryInterceptor))
