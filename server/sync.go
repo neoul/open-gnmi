@@ -13,16 +13,20 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-// SyncCallback is the callback interface invoked by the gNMI server.
-// in order to request the data updates of the specified path to the system.
+// SyncCallback is a callback interface invoked by the gNMI server to request
+// the data updates of the specified path to the system.
 // Upon gNMI Get or Subscribe request, the SyncCallback will be invoked by the server.
-// the SyncCallback must update the data tree based on the sync-requested paths.
+// The user must define and configure the SyncCallback interface if the synchronization of
+// the data is required for some special paths before the gNMI Get and Subscribe RPC responses.
 type SyncCallback interface {
 	SyncCallback(path ...string) error
 }
 
-// SyncCallbackOption is used to configure the sync  the gNMI server
-// SyncMinInterval is the minimum time of state sync interval (unit: sec)
+// SyncCallbackOption is used to configure the data synchronization options
+// of the gNMI server at startup. SyncMinInterval (unit: sec) is the minimum interval
+// between two sync requests for each specified path. SyncCallback is the callback
+// interface invoked by the gNMI server upon the sync request to request the data updates
+// of the specified path to the system.
 type SyncCallbackOption struct {
 	SyncCallback
 	MinInterval time.Duration
@@ -68,36 +72,53 @@ type syncEvent struct {
 	*Server
 }
 
-func (e *syncEvent) String() string   { return "sync." + e.regPath }
+func (e *syncEvent) String() string { return "sync." + e.regPath }
+
+// IsEventReceiver is the EventReceiver interface for sync
 func (e *syncEvent) IsEventReceiver() {}
+
+// EventComplete is the EventReceiver interface for sync
 func (e *syncEvent) EventComplete(interface{}) bool {
 	return true
 }
 
+// EventReceive is the EventReceiver interface for sync
 func (e *syncEvent) EventReceive(edata interface{}, event ChangeEvent, path string) interface{} {
 	if yangtree.FindSchema(e.RootSchema, path) == e.schema {
 		switch event {
 		case EventCreate:
+			if glog.V(10) {
+				glog.Infof("sync: add path %q", path)
+			}
 			e.syncPath.Add(path, &syncTime{})
 		case EventDelete:
+			if glog.V(10) {
+				glog.Infof("sync: delete path %q", path)
+			}
 			e.syncPath.Remove(path)
 		}
 	}
 	return nil
 }
 
+// EventPath is the EventReceiver interface for sync
 func (e *syncEvent) EventPath() []string {
 	return []string{e.regPath}
 }
 
-// AddSyncPath() is used to set the sync-requested path.
-func (s *Server) AddSyncPath(path ...string) error {
+// RegisterSync() is used to set the sync-required paths.
+// When the data of the sync-required paths are retrieved by the Get or Subscribe RPC,
+// the SyncCallback interface is invoked by the gNMI server for the data synchronization.
+func (s *Server) RegisterSync(path ...string) error {
+	s.Lock()
+	defer s.Unlock()
 	for i := range path {
 		schema := yangtree.FindSchema(s.RootSchema, path[i])
 		if schema == nil {
-			err := status.TaggedErrorf(codes.Internal, status.TagOperationFail, "%q not found", path[i])
+			err := status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"schema not found for %q", path[i])
 			if glog.V(10) {
-				glog.Errorf("sync: %v", err)
+				glog.Errorf("sync: registering error: %v", err)
 			}
 			return err
 		}
@@ -107,18 +128,71 @@ func (s *Server) AddSyncPath(path ...string) error {
 			syncPath: s.syncPath,
 			Server:   s,
 		}
-		node, _ := yangtree.Find(s.Root, path[i])
-		for j := range node {
-			s.syncPath.Add(node[j].Path(), &syncTime{})
-		}
+
 		if err := s.Event.Register(event); err != nil {
 			if glog.V(10) {
-				glog.Errorf("sync: %v", err)
+				glog.Errorf("sync: registering error: %v", err)
 			}
 			return err
 		}
-		if glog.V(10) {
-			glog.Infof("sync: %q added", path[i])
+		s.syncEvents = append(s.syncEvents, event)
+		node, _ := yangtree.Find(s.Root, path[i])
+		for j := range node {
+			if glog.V(10) {
+				glog.Infof("sync: add path %q", node[j].Path())
+			}
+			s.syncPath.Add(node[j].Path(), &syncTime{})
+		}
+	}
+	return nil
+}
+
+// UnregisterSync() is used to remove the sync-required paths.
+// When the data of the sync-required paths are retrieved by the Get or Subscribe RPC,
+// the SyncCallback interface is invoked by the gNMI server for the data synchronization.
+func (s *Server) UnregisterSync(path ...string) error {
+	s.Lock()
+	defer s.Unlock()
+	for i := range path {
+		schema := yangtree.FindSchema(s.RootSchema, path[i])
+		if schema == nil {
+			err := status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"schema not found for %q", path[i])
+			if glog.V(10) {
+				glog.Errorf("sync: unregistering error: %v", err)
+			}
+			return err
+		}
+
+		var event *syncEvent
+		for i := range s.syncEvents {
+			if s.syncEvents[i].schema == schema {
+				event = s.syncEvents[i]
+				s.syncEvents = append(s.syncEvents[:i], s.syncEvents[i+1:]...)
+				break
+			}
+		}
+		if event == nil {
+			err := status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"event not found for %s", path[i])
+			if glog.V(10) {
+				glog.Errorf("sync: unregistering error: %v", err)
+			}
+			return err
+		}
+		s.Event.Unregister(event)
+	}
+	s.syncPath.Clear()
+	if glog.V(10) {
+		glog.Infof("sync.delete all paths are deleted")
+	}
+	for i := range s.syncEvents {
+		node, _ := yangtree.Find(s.Root, s.syncEvents[i].regPath)
+		for j := range node {
+			if glog.V(10) {
+				glog.Infof("sync: add path %q", node[j].Path())
+			}
+			s.syncPath.Add(node[j].Path(), &syncTime{})
 		}
 	}
 	return nil
@@ -138,21 +212,16 @@ func (s *Server) syncExec(syncpaths map[string]interface{}) {
 				tosend = append(tosend, p)
 			} else {
 				if glog.V(10) {
-					glog.Infof("sync: %q: filtered by sync-min-interval", p)
+					glog.Infof("sync: sync path %q is filtered by sync-min-interval", p)
 				}
 			}
 		}
 	}
-	if glog.V(10) {
-		for _, p := range tosend {
-			glog.Infof("sync: %q", p)
-		}
-	}
-
 	s.syncCallback.SyncCallback(tosend...)
 }
 
-// syncRequest requests the data sync to the system before read. (do not use Lock() before it.)
+// syncRequest requests the data sync to the system before read.
+// Do not use server.Lock() before it because it updates the server.Root.
 func (s *Server) syncRequest(prefix *gnmipb.Path, paths []*gnmipb.Path) {
 	if s.syncCallback == nil {
 		return

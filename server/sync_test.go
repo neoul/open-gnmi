@@ -37,7 +37,7 @@ func TestSync(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to create a model: %v", err)
 	}
-	if err := s.AddSyncPath(syncRequiredPath...); err != nil {
+	if err := s.RegisterSync(syncRequiredPath...); err != nil {
 		t.Errorf("fail to set sync-path: %v", err)
 	}
 	jstr := `{

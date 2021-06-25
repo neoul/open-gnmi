@@ -75,6 +75,7 @@ type Server struct {
 	// Fields to request the date updates to the system for Get and Subscribe requests.
 	syncMinInterval time.Duration // The minimal interval for SyncCallback
 	syncCallback    SyncCallback
+	syncEvents      []*syncEvent
 	syncPath        *gtrie.Trie
 
 	// For Set
