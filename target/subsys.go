@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -50,26 +51,45 @@ func (ifstats *IfStats) MarshalJSON() ([]byte, error) {
 	jsonstr.WriteString("{")
 	// config
 	jsonstr.WriteString(fmt.Sprintf(`"name":%q,`, ifstats.Name))
-	jsonstr.WriteString(fmt.Sprintf(`"config": {"name": %q, "enabled": %v, "mtu": %v},`, ifstats.Name, ifstats.Enabled, ifstats.Mtu))
-	jsonstr.WriteString(fmt.Sprintf(`"state": {"name": %q, "enabled": %v, "mtu": %v`, ifstats.Name, ifstats.Enabled, ifstats.Mtu))
+	jsonstr.WriteString(fmt.Sprintf(`"config":{"name":%q,"enabled":%v,"mtu":%v},`, ifstats.Name, ifstats.Enabled, ifstats.Mtu))
+	jsonstr.WriteString(fmt.Sprintf(`"state":{"name":%q,"enabled":%v,"mtu":%v`, ifstats.Name, ifstats.Enabled, ifstats.Mtu))
 	jsonstr.WriteString(`,"counters":{`)
 	jsonstr.WriteString(
 		fmt.Sprintf(
-			`"out-pkts": %d,"out-octets": %d,"out-errors": %d,"out-discards": %d`,
+			`"out-pkts":%d,"out-octets":%d,"out-errors":%d,"out-discards":%d`,
 			ifstats.TxPacket,
 			ifstats.TxBytes,
 			ifstats.TxError,
 			ifstats.TxDrop))
 	jsonstr.WriteString(
 		fmt.Sprintf(
-			`,"in-pkts": %d,"in-octets": %d,"in-errors": %d,"in-discards": %d`,
+			`,"in-pkts":%d,"in-octets":%d,"in-errors":%d,"in-discards":%d`,
 			ifstats.TxPacket,
 			ifstats.TxBytes,
 			ifstats.TxError,
 			ifstats.TxDrop))
-	jsonstr.WriteString("}")
-	jsonstr.WriteString("}")
-	jsonstr.WriteString("}")
+	jsonstr.WriteString(`}`)
+	jsonstr.WriteString(`}`)
+
+	if ifstats.InetAddr != "" || ifstats.Inet6Addr != "" {
+		subifstr := `,"subinterfaces":{"subinterface":{"0":{"index":0,"config":{"index": 0},`
+		jsonstr.WriteString(subifstr)
+		if ifstats.InetAddr != "" {
+			inetstr := `"ipv4":{"addresses":{"address":{%q:{"ip":%q,"config":{"ip": %q,"prefix-length": %d},"state":{"ip": %q,"prefix-length": %d}}}}}`
+			jsonstr.WriteString(fmt.Sprintf(inetstr, ifstats.InetAddr, ifstats.InetAddr, ifstats.InetAddr, mask2prefix(ifstats.Netmask), ifstats.InetAddr, mask2prefix(ifstats.Netmask)))
+		}
+		if ifstats.Inet6Addr != "" {
+			if ifstats.InetAddr != "" {
+				jsonstr.WriteString(`,`)
+			}
+			inetstr := `"ipv6":{"addresses":{"address":{%q:{"ip": %q,"config":{"ip":%q,"prefix-length": %d},"state":{"ip":%q,"prefix-length": %d}}}}}`
+			jsonstr.WriteString(fmt.Sprintf(inetstr, ifstats.Inet6Addr, ifstats.Inet6Addr, ifstats.Inet6Addr, ifstats.Inet6Prefixlen, ifstats.Inet6Addr, ifstats.Inet6Prefixlen))
+		}
+		jsonstr.WriteString(`}}}`)
+	}
+
+	jsonstr.WriteString(`}`)
+	fmt.Println(jsonstr.String())
 	return []byte(jsonstr.String()), nil
 }
 
@@ -88,6 +108,16 @@ func split(s string) []string {
 		}
 	}
 	return ns
+}
+
+func mask2prefix(maskstr string) int {
+	var prefix []uint8 = make([]uint8, 4)
+	fmt.Sscanf(maskstr, "%d.%d.%d.%d", &prefix[0], &prefix[1], &prefix[2], &prefix[3])
+	p := 0
+	for i := range prefix {
+		p += bits.TrailingZeros8(prefix[i])
+	}
+	return p
 }
 
 func newIfStats(ifinfo string) *IfStats {
@@ -154,7 +184,7 @@ func newIfStats(ifinfo string) *IfStats {
 	return ifs
 }
 
-func CollectIfstats(name string) ([]*IfStats, error) {
+func collectIfstats(name string) ([]*IfStats, error) {
 	if name == "" {
 		output, err := exec.Command("ifconfig").Output()
 		if err != nil {
@@ -186,8 +216,8 @@ func CollectIfstats(name string) ([]*IfStats, error) {
 	return nil, fmt.Errorf("%q not found", name)
 }
 
-func PollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done chan bool) {
-	stats, _ := CollectIfstats("") // collect all
+func pollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done chan bool) {
+	stats, _ := collectIfstats("") // collect all
 	for _, entry := range stats {
 		ifinfo.Ifstats[entry.Name] = entry
 		b, err := json.Marshal(entry)
@@ -205,7 +235,7 @@ func PollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done 
 		case <-done:
 			return
 		case <-ticker.C:
-			stats, _ = CollectIfstats("")
+			stats, _ = collectIfstats("")
 			for _, entry := range stats {
 				ifinfo.Ifstats[entry.Name] = entry
 				b, err := json.Marshal(entry)
@@ -223,6 +253,7 @@ func PollingIfstats(s *server.Server, ifinfo *IfInfo, ticker *time.Ticker, done 
 	}
 }
 
+// Subsystem() collects and populates the interface data to the gNMI target.
 func Subsystem(s *server.Server) error {
 	done := make(chan bool)
 	ifinfo := &IfInfo{Ifstats: make(map[string]*IfStats)}
@@ -233,6 +264,6 @@ func Subsystem(s *server.Server) error {
 		ticker = time.NewTicker(time.Second)
 		ticker.Stop()
 	}
-	go PollingIfstats(s, ifinfo, ticker, done)
+	go pollingIfstats(s, ifinfo, ticker, done)
 	return nil
 }
