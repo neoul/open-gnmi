@@ -180,7 +180,54 @@ func hasMaxSubSession(opts []Option) int {
 	return 16
 }
 
-// NewServer creates an instance of Server with given json config.
+// NewServer creates a new instance of gNMI Server.
+//
+//  // YANG files to be loaded.
+//  files := []string{
+// 	 "../../../YangModels/yang/standard/ietf/RFC/iana-if-type@2017-01-19.yang",
+// 	 "../../../openconfig/public/release/models/interfaces/openconfig-interfaces.yang",
+// 	 "../../../openconfig/public/release/models/interfaces/openconfig-if-ip.yang",
+// 	 "../../../openconfig/public/release/models/system/openconfig-messages.yang",
+// 	 "../../../openconfig/public/release/models/telemetry/openconfig-telemetry.yang",
+// 	 "../../../openconfig/public/release/models/openflow/openconfig-openflow.yang",
+// 	 "../../../openconfig/public/release/models/platform/openconfig-platform.yang",
+// 	 "../../../openconfig/public/release/models/system/openconfig-system.yang",
+// 	 "../../../neoul/yangtree/data/sample/sample.yang",
+//  }
+//
+//  // Directories of YANG files to be imported or includeded
+//  dir := []string{"../../../openconfig/public/", "../../../YangModels/yang"}
+//
+//  // YANG module name to be excluded from the gNMI server model
+//  excluded := []string{"ietf-interfaces"}
+//
+//  // NewServer loads all YANG files and initializes the gNMI server.
+//  gnmiserver, err := server.NewServer(*yang, *dir, *excludes, gnmiOptions...)
+//  if err != nil {
+//  	glog.Exitf("gnmi new server failed: %v", err)
+//  }
+//  // Registers the gNMI sync-required path.
+//  gnmiserver.RegisterSync("/interfaces/interface")
+//  // Starts the subsystem.
+//  if err := subsystem.Start(gnmiserver); err != nil {
+//  	glog.Exitf("start subsystem failed: %v", err)
+//  }
+//  // Uncomment this for user authentication
+//  // opts = append(opts, grpc.UnaryInterceptor(login.UnaryInterceptor))
+//  // opts = append(opts, grpc.StreamInterceptor(login.StreamInterceptor))
+//  // Creates gRPC server used for the gNMI service.
+//  grpcserver := grpc.NewServer(opts...)
+//  // Register the gNMI service to the gRPC server.
+//  gnmipb.RegisterGNMIServer(grpcserver, gnmiserver)
+//  // Creates and binds the socket to the gRPC server to serve the gNMI service.
+//  listen, err := net.Listen("tcp", *bindAddr)
+//  if err != nil {
+//  	glog.Exitf("listen failed: %v", err)
+//  }
+//  if err := grpcserver.Serve(listen); err != nil {
+//  	grpcserver.Stop()
+//  	glog.Exitf("serve failed: %v", err)
+//  }
 func NewServer(file, dir, excluded []string, opts ...Option) (*Server, error) {
 	rootschema, err := yangtree.Load(file, dir, excluded, yangtree.SchemaOption{CreatedWithDefault: true})
 	if err != nil {
@@ -203,14 +250,8 @@ func NewServer(file, dir, excluded []string, opts ...Option) (*Server, error) {
 		setUpdatedByServer: hasUpdatedByServer(opts),
 		setCallback:        hasSetCallbackFunc(opts),
 		Modeldata:          gyangtree.GetModuleData(rootschema),
-		// OnChanges:
 	}
 	s.syncInit(opts...)
-	// s.dialoutInitiator, err = s.initDialout()
-	// if err != nil {
-	// 	return nil, err
-	// }
-
 	return s, nil
 }
 
@@ -235,7 +276,8 @@ func (s *Server) Load(startup []byte, encoding Encoding) error {
 	return nil
 }
 
-// CheckEncoding checks whether encoding and models are supported by the server. Return error if anything is unsupported.
+// CheckEncoding checks whether encoding and models are supported by the server.
+// Return error if anything is unsupported.
 func (s *Server) CheckEncoding(encoding gnmipb.Encoding) error {
 	hasSupportedEncoding := false
 	for _, supportedEncoding := range supportedEncodings {

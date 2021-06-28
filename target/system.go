@@ -138,6 +138,10 @@ func newIfStats(ifinfo string) *ifStats {
 	if mtustart >= 0 {
 		fmt.Sscanf(ifinfolist[0][mtustart:], "mtu %d", &(ifs.Mtu))
 	}
+	if strings.Contains(ifinfolist[0], "UP") {
+		ifs.Enabled = true
+	}
+
 	for _, s := range ifinfolist[1:] {
 		item := split(s)
 		if len(item) == 0 {
@@ -181,7 +185,7 @@ func newIfStats(ifinfo string) *ifStats {
 
 func collectIfstats(name string) ([]*ifStats, error) {
 	if name == "" {
-		output, err := exec.Command("ifconfig").Output()
+		output, err := exec.Command("ifconfig", "-a").Output()
 		if err != nil {
 			return nil, err
 		}

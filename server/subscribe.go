@@ -135,6 +135,9 @@ func (ec *EventCtrl) Unregister(eReceiver EventReceiver) {
 // setReady() sets gnmi event.
 func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error {
 	for i := range node {
+		if glog.V(11) {
+			glog.Infof("event: on-change in %q", node[i].Path())
+		}
 		if !yangtree.IsValid(node[i]) {
 			return fmt.Errorf("invalid node inserted for gnmi update event")
 		}
@@ -163,6 +166,9 @@ func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error
 // setReady() sets gnmi event.
 func (ec *EventCtrl) setReadyByPath(event ChangeEvent, path []string) error {
 	for i := range path {
+		if glog.V(11) {
+			glog.Infof("event: on-change in %q", path[i])
+		}
 		for _, group := range ec.Receivers.FindAll(path[i]) {
 			egroup := group.(EventRecvGroup)
 			for eReceiver := range egroup {

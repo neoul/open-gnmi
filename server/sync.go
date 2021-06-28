@@ -110,8 +110,8 @@ func (e *syncEvent) EventPath() []string {
 }
 
 // RegisterSync() is used to set the sync-required paths.
-// When the data of the sync-required paths are retrieved by the Get or Subscribe RPC,
-// the SyncCallback interface is invoked by the gNMI server for the data synchronization.
+// The SyncCallback interface is invoked by the gNMI server for the data synchronization
+// when the data of the sync-required paths are retrieved by the Get or Subscribe RPC.
 func (s *Server) RegisterSync(path ...string) error {
 	s.Lock()
 	defer s.Unlock()
