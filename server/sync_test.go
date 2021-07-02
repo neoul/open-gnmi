@@ -33,7 +33,7 @@ func TestSync(t *testing.T) {
 	tsync := &testSync{}
 	file, dir, excluded := testModels()
 	s, err := NewServer(file, dir, excluded,
-		SyncCallbackOption{SyncCallback: tsync, MinInterval: 0 * time.Second})
+		SyncCallbackOption{SyncCallback: tsync, MinInterval: 1 * time.Nanosecond})
 	if err != nil {
 		t.Errorf("failed to create a model: %v", err)
 	}

@@ -105,7 +105,7 @@ func main() {
 	if *pathPrint {
 		ss := yangtree.CollectSchemaEntries(gnmiserver.RootSchema, true)
 		for i := range ss {
-			fmt.Println(yangtree.GeneratePath(ss[i], false, false))
+			fmt.Println(yangtree.GeneratePath(ss[i], true, false))
 		}
 		os.Exit(0)
 	}

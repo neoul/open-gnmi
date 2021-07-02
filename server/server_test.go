@@ -930,6 +930,35 @@ func TestReplace(t *testing.T) {
 				>`,
 			val: &gnmipb.TypedValue{
 				Value: &gnmipb.TypedValue_JsonIetfVal{
+					JsonIetfVal: []byte(`{"name":"swpri1-1-1", "config": {"name": "swpri1-1-1"}}`),
+				},
+			},
+			wantRetCode: codes.OK,
+			wantConfig: `{
+				"components": {
+					"component": [
+						{
+							"name": "swpri1-1-1",
+							"config": {
+								"name": "swpri1-1-1"
+							}
+						}
+					]
+				}
+			}`,
+		},
+		{
+			desc:       "replace a keyed list subtree (missing key)",
+			initConfig: `{}`,
+			op:         gnmipb.UpdateResult_REPLACE,
+			textPbPath: `
+				elem: <name: "components" >
+				elem: <
+					name: "component"
+					key: <key: "name" value: "swpri1-1-1" >
+				>`,
+			val: &gnmipb.TypedValue{
+				Value: &gnmipb.TypedValue_JsonIetfVal{
 					JsonIetfVal: []byte(`{"config": {"name": "swpri1-1-1"}}`),
 				},
 			},

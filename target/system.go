@@ -12,6 +12,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/neoul/open-gnmi/server"
 	"github.com/neoul/yangtree"
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/spf13/pflag"
 )
 
@@ -254,7 +255,7 @@ func (system *System) pollingIfstats() {
 	}
 }
 
-// NewSystem() collects and populates the interface data to the gNMI target.
+// NewSystem() returns a system structure to collects and populates network interface card data to the gNMI target.
 func NewSystem() *System {
 	system := &System{
 		Done: make(chan bool),
@@ -301,5 +302,10 @@ func (system *System) SyncCallback(path ...string) error {
 			}
 		}
 	}
+	return nil
+}
+
+func (system *System) SetCallback(op gnmipb.UpdateResult_Operation,
+	path string, cur, new yangtree.DataNode, rollback bool) error {
 	return nil
 }

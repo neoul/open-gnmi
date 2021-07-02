@@ -149,7 +149,7 @@ func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error
 			}
 		}
 		schema := node[i].Schema()
-		if yangtree.HasDifferentSchemaPath(schema) {
+		if yangtree.HasUniqueListParent(schema) {
 			schemapath := yangtree.GeneratePath(schema, false, false)
 			for _, group := range ec.Receivers.FindAll(schemapath) {
 				egroup := group.(EventRecvGroup)

@@ -158,7 +158,7 @@ func (s *Server) setreplace(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedV
 		if cur == s.Root { // replace new root if it is the root
 			s.Root = new
 		} else {
-			if err := yangtree.Replace(s.Root, _path, new); err != nil {
+			if _, err := gyangtree.Replace(s.Root, _path, new); err != nil {
 				return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 					"set.replace %q: %v", _path, err)
 			}
@@ -212,7 +212,7 @@ func (s *Server) setupdate(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedVa
 				"set.update %q: %v", _path, err)
 		}
 		backup := yangtree.Clone(cur)
-		if err := yangtree.Merge(s.Root, _path, new); err != nil {
+		if _, err := gyangtree.Update(s.Root, _path, new); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.update %q: %v", _path, err)
 		}
