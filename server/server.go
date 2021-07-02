@@ -54,11 +54,6 @@ var (
 	supportedEncodings = []gnmipb.Encoding{gnmipb.Encoding_JSON, gnmipb.Encoding_JSON_IETF}
 )
 
-type SetCallback interface {
-	SetCallback(op gnmipb.UpdateResult_Operation,
-		path string, cur, new yangtree.DataNode, rollback bool) error
-}
-
 // Server maintains the device state to provide Capabilities, Get, Set and Subscribe RPCs of gNMI service.
 type Server struct {
 	*sync.RWMutex
@@ -82,8 +77,9 @@ type Server struct {
 	setDisabled        bool
 	setUpdatedByServer bool
 	setCallback        SetCallback
+	setTransaction     SetTransaction
 	setBackup          []*setEntry
-	setSeq             uint64
+	setSeq             uint
 
 	Modeldata []*gnmipb.ModelData
 }
@@ -92,53 +88,6 @@ type Server struct {
 type Option interface {
 	// IsOption is a marker method for each Option.
 	IsOption()
-}
-
-// DisableSetRPC option is used to disable Set RPC
-type DisableSetRPC struct {
-}
-
-// IsOption - DisableSetRPC is a Option.
-func (o DisableSetRPC) IsOption() {}
-
-func hasDisableSetRPC(opts []Option) bool {
-	for _, o := range opts {
-		switch o.(type) {
-		case DisableSetRPC:
-			return true
-		}
-	}
-	return false
-}
-
-// SetCallbackOption option is used to register SetCallback.
-// Upon Set RPC, SetCallback will be invoked by the gNMI Server with the changed data node.
-type SetCallbackOption struct {
-	SetCallback
-	UpdatedByServer bool
-}
-
-// IsOption - SetCallbackOption is a Option.
-func (o SetCallbackOption) IsOption() {}
-
-func hasSetCallbackFunc(opts []Option) SetCallback {
-	for _, o := range opts {
-		switch set := o.(type) {
-		case SetCallbackOption:
-			return set.SetCallback
-		}
-	}
-	return nil
-}
-
-func hasUpdatedByServer(opts []Option) bool {
-	for _, o := range opts {
-		switch set := o.(type) {
-		case SetCallbackOption:
-			return set.UpdatedByServer
-		}
-	}
-	return true
 }
 
 // Aliases (Target-defined aliases configuration within a Subscription)
@@ -243,14 +192,12 @@ func NewServer(file, dir, excluded []string, opts ...Option) (*Server, error) {
 		Root:       root,
 		Event:      newEventCtrl(rootschema),
 
-		serverAliases:      hasAliases(opts),
-		subSession:         make(map[ObjID]*SubSession),
-		maxSubSession:      hasMaxSubSession(opts),
-		setDisabled:        hasDisableSetRPC(opts),
-		setUpdatedByServer: hasUpdatedByServer(opts),
-		setCallback:        hasSetCallbackFunc(opts),
-		Modeldata:          gyangtree.GetModuleData(rootschema),
+		serverAliases: hasAliases(opts),
+		subSession:    make(map[ObjID]*SubSession),
+		maxSubSession: hasMaxSubSession(opts),
+		Modeldata:     gyangtree.GetModuleData(rootschema),
 	}
+	s.setInit(opts...)
 	s.syncInit(opts...)
 	return s, nil
 }
@@ -269,10 +216,10 @@ func (s *Server) AllSchemaPaths() []string {
 func (s *Server) Load(startup []byte, encoding Encoding) error {
 	s.Lock()
 	defer s.Unlock()
-	if err := s.setload(startup, encoding); err != nil {
+	if err := s.setLoad(startup, encoding); err != nil {
 		return err
 	}
-	s.setdone()
+	s.setDone()
 	return nil
 }
 
@@ -585,13 +532,13 @@ func (s *Server) set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 	s.Lock()
 	defer s.Unlock()
 
-	s.setinit()
+	err = s.setStart()
 	for _, path := range req.GetDelete() {
 		if err != nil {
 			result = append(result, buildUpdateResultAborted(gnmipb.UpdateResult_DELETE, path))
 			continue
 		}
-		err = s.setdelete(prefix, path)
+		err = s.setDelete(prefix, path)
 		result = append(result, buildUpdateResult(gnmipb.UpdateResult_DELETE, path, err))
 	}
 	for _, r := range req.GetReplace() {
@@ -600,7 +547,7 @@ func (s *Server) set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 			result = append(result, buildUpdateResultAborted(gnmipb.UpdateResult_REPLACE, path))
 			continue
 		}
-		err = s.setreplace(prefix, path, r.GetVal())
+		err = s.setReplace(prefix, path, r.GetVal())
 		result = append(result, buildUpdateResult(gnmipb.UpdateResult_REPLACE, path, err))
 	}
 	for _, u := range req.GetUpdate() {
@@ -609,13 +556,16 @@ func (s *Server) set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 			result = append(result, buildUpdateResultAborted(gnmipb.UpdateResult_UPDATE, path))
 			continue
 		}
-		err = s.setupdate(prefix, path, u.GetVal())
+		err = s.setUpdate(prefix, path, u.GetVal())
 		result = append(result, buildUpdateResult(gnmipb.UpdateResult_UPDATE, path, err))
 	}
-	if err != nil {
-		s.setrollback()
+	if err == nil {
+		err = s.setCommit()
 	}
-	s.setdone()
+	if err != nil {
+		s.setRollback()
+	}
+	s.setDone()
 	resp := &gnmipb.SetResponse{
 		Prefix:   prefix,
 		Response: result,

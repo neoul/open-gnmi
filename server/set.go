@@ -12,39 +12,140 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-type setEntry struct {
-	op       gnmipb.UpdateResult_Operation
-	path     string
-	cur      yangtree.DataNode
-	new      yangtree.DataNode
-	executed bool
+type SetCallback interface {
+	SetCallback(op gnmipb.UpdateResult_Operation,
+		path string, cur, new yangtree.DataNode) error
 }
 
-// setinit initializes the Set transaction.
-func (s *Server) setinit() error {
-	s.setSeq++
-	s.setBackup = nil
+type SetTransaction interface {
+	SetStart(setID uint, rollback bool) error
+	SetEnd(setID uint) error
+}
+
+// DisableSetRPC option is used to disable Set RPC
+type DisableSetRPC struct {
+}
+
+// IsOption - DisableSetRPC is a Option.
+func (o DisableSetRPC) IsOption() {}
+
+func hasDisableSetRPC(opts []Option) bool {
+	for _, o := range opts {
+		switch o.(type) {
+		case DisableSetRPC:
+			return true
+		}
+	}
+	return false
+}
+
+// SetCallbackOption is an gNMI server option used to register SetCallback.
+// Upon Set RPC, SetCallback will be invoked by the gNMI Server with the changed data node.
+type SetCallbackOption struct {
+	SetCallback
+	SetTransaction
+	SetUpdatedByServer bool
+}
+
+// IsOption - SetCallbackOption is a Option.
+func (o SetCallbackOption) IsOption() {}
+
+func hasSetCallback(opts []Option) SetCallback {
+	for _, o := range opts {
+		switch set := o.(type) {
+		case SetCallbackOption:
+			return set.SetCallback
+		}
+	}
 	return nil
 }
 
-// setdone clears the rollback data and resets all configuration in order to receive updates from the system.
-func (s *Server) setdone() {
+func hasSetTransaction(opts []Option) SetTransaction {
+	for _, o := range opts {
+		switch set := o.(type) {
+		case SetCallbackOption:
+			return set.SetTransaction
+		}
+	}
+	return nil
+}
+
+func hasUpdatedByServer(opts []Option) bool {
+	for _, o := range opts {
+		switch set := o.(type) {
+		case SetCallbackOption:
+			return set.SetUpdatedByServer
+		}
+	}
+	return true
+}
+
+type setEntry struct {
+	Operation gnmipb.UpdateResult_Operation
+	Path      string
+	Cur       yangtree.DataNode
+	New       yangtree.DataNode
+	executed  bool
+}
+
+func (s *Server) setInit(opts ...Option) error {
+	s.setDisabled = hasDisableSetRPC(opts)
+	s.setUpdatedByServer = hasUpdatedByServer(opts)
+	s.setTransaction = hasSetTransaction(opts)
+	s.setCallback = hasSetCallback(opts)
+	return nil
+}
+
+// setStart initializes the Set transaction.
+func (s *Server) setStart() error {
+	s.setSeq++
+	s.setBackup = nil
+	if s.setTransaction == nil {
+		return nil
+	}
+	err := s.setTransaction.SetStart(s.setSeq, false)
+	if err != nil {
+		if glog.V(10) {
+			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"set.start error: %v", err))
+		}
+	}
+	return err
+}
+
+// setCommit ends the Set transaction.
+func (s *Server) setCommit() error {
+	if s.setTransaction == nil {
+		return nil
+	}
+	err := s.setTransaction.SetEnd(s.setSeq)
+	if err != nil {
+		if glog.V(10) {
+			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"set.complete error: %v", err))
+		}
+	}
+	return err
+}
+
+// setDone clears the rollback data and resets all configuration in order to receive updates from the system.
+func (s *Server) setDone() {
 	if !s.setUpdatedByServer {
 		// The set data is reverted to the previous data if the setUpdatedByServer is disabled.
 		// The set data must be updated by the system, not the gnmi server.
 		for _, e := range s.setBackup {
 			if glog.V(10) {
-				glog.Infof("set.done %s,%q", e.op, e.path)
+				glog.Infof("set.done %s,%q", e.Operation, e.Path)
 			}
-			if e.path == "" || e.path == "/" { // root
-				s.Root = e.cur
+			if e.Path == "" || e.Path == "/" { // root
+				s.Root = e.Cur
 			} else {
-				err := yangtree.Replace(s.Root, e.path, e.cur)
+				err := yangtree.Replace(s.Root, e.Path, e.Cur)
 				if err != nil {
 					fmt.Println(err)
 					if glog.V(10) {
 						glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-							"set.done %s: %v", e.path, err))
+							"set.done %s: %v", e.Path, err))
 					}
 				}
 			}
@@ -53,29 +154,43 @@ func (s *Server) setdone() {
 	s.setBackup = nil
 }
 
-// setrollback executes setIndirect to revert the configuration.
-func (s *Server) setrollback() {
+// setRollback executes setIndirect to revert the configuration.
+func (s *Server) setRollback() {
+	if s.setTransaction == nil {
+		return
+	}
+	if err := s.setTransaction.SetStart(s.setSeq, true); err != nil {
+		if glog.V(10) {
+			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"set.rollback: %v", err))
+		}
+	}
 	for _, e := range s.setBackup {
 		if glog.V(10) {
-			glog.Infof("set.rollback %q", e.path)
+			glog.Infof("set.rollback %q", e.Path)
 		}
 		// error is ignored on rollback
-		if err := s.execCallback(e, true); err != nil {
+		if err := s.execSetCallback(e, true); err != nil {
 			if glog.V(10) {
 				glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-					"set.rollback %q: %v", e.path, err))
+					"set.rollback %q: %v", e.Path, err))
 			}
 		}
 	}
-	s.setBackup = nil
+	if err := s.setTransaction.SetEnd(s.setSeq); err != nil {
+		if glog.V(10) {
+			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+				"set.rollback error: %v", err))
+		}
+	}
 }
 
-// setdelete deletes the data nodes of the path.
+// setDelete deletes the data nodes of the path.
 // 3.4.6 Deleting Configuration
 //  - All descendants of the target path are recursively deleted.
 //  - Wildcards (*, ...) are supported.
 //  - Non-existent node deletion is accepted.
-func (s *Server) setdelete(prefix, path *gnmipb.Path) error {
+func (s *Server) setDelete(prefix, path *gnmipb.Path) error {
 	gpath := gyangtree.MergeGNMIPath(prefix, path)
 	if glog.V(10) {
 		glog.Infof("set.delete %q", gyangtree.ToPath(true, gpath))
@@ -104,8 +219,8 @@ func (s *Server) setdelete(prefix, path *gnmipb.Path) error {
 			return status.TaggedErrorf(codes.InvalidArgument, status.TagBadData,
 				"set.delete %q: %v", path, err)
 		}
-		e := &setEntry{op: gnmipb.UpdateResult_DELETE, path: path, cur: node, new: nil}
-		if err := s.execCallback(e, false); err != nil {
+		e := &setEntry{Operation: gnmipb.UpdateResult_DELETE, Path: path, Cur: node, New: nil}
+		if err := s.execSetCallback(e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.delete %q: %v", path, err)
 		}
@@ -113,11 +228,11 @@ func (s *Server) setdelete(prefix, path *gnmipb.Path) error {
 	return nil
 }
 
-// setreplace deletes the path from root if the path exists.
+// setReplace deletes the path from root if the path exists.
 // 3.4.4 Modes of Update: Replace versus Update
 //  1. converts the typed value to new data node with the default value.
 //  2. replace the cur data node to the new data node.
-func (s *Server) setreplace(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedValue) error {
+func (s *Server) setReplace(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedValue) error {
 	gpath := gyangtree.MergeGNMIPath(prefix, path)
 	if glog.V(10) {
 		glog.Infof("set.replace %q", gyangtree.ToPath(true, gpath))
@@ -158,22 +273,22 @@ func (s *Server) setreplace(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedV
 		if cur == s.Root { // replace new root if it is the root
 			s.Root = new
 		} else {
-			if _, err := gyangtree.Replace(s.Root, _path, new); err != nil {
+			if new, err = gyangtree.Replace(s.Root, _path, new); err != nil {
 				return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 					"set.replace %q: %v", _path, err)
 			}
 		}
-		e := &setEntry{op: gnmipb.UpdateResult_REPLACE, path: _path, cur: cur, new: new}
-		if err := s.execCallback(e, false); err != nil {
+		e := &setEntry{Operation: gnmipb.UpdateResult_REPLACE, Path: new.Path(), Cur: cur, New: new}
+		if err := s.execSetCallback(e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.replace %q: %v", _path, err)
+				"set.replace %q: %v", new.Path(), err)
 		}
 	}
 	return nil
 }
 
-// setupdate deletes the path from root if the path exists.
-func (s *Server) setupdate(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedValue) error {
+// setUpdate deletes the path from root if the path exists.
+func (s *Server) setUpdate(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedValue) error {
 	gpath := gyangtree.MergeGNMIPath(prefix, path)
 	if glog.V(10) {
 		glog.Infof("set.update %q", gyangtree.ToPath(true, gpath))
@@ -212,23 +327,23 @@ func (s *Server) setupdate(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedVa
 				"set.update %q: %v", _path, err)
 		}
 		backup := yangtree.Clone(cur)
-		if _, err := gyangtree.Update(s.Root, _path, new); err != nil {
+		if new, err = gyangtree.Update(s.Root, _path, new); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.update %q: %v", _path, err)
 		}
 
-		e := &setEntry{op: gnmipb.UpdateResult_REPLACE, path: _path, cur: backup, new: new}
-		if err := s.execCallback(e, false); err != nil {
+		e := &setEntry{Operation: gnmipb.UpdateResult_REPLACE, Path: new.Path(), Cur: backup, New: new}
+		if err := s.execSetCallback(e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.update %q: %v", _path, err)
+				"set.update %q: %v", new.Path(), err)
 		}
 	}
 	return nil
 }
 
-// setload loads the startup state of the Server.
+// setLoad loads the startup state of the Server.
 // startup is YAML or JSON bytes to populate the data tree.
-func (s *Server) setload(startup []byte, encoding Encoding) error {
+func (s *Server) setLoad(startup []byte, encoding Encoding) error {
 	new, err := yangtree.New(s.RootSchema)
 	if err != nil {
 		return status.TaggedError(codes.Internal, status.TagOperationFail, err)
@@ -242,8 +357,8 @@ func (s *Server) setload(startup []byte, encoding Encoding) error {
 		return status.TaggedErrorf(codes.Unimplemented, status.TagOperationFail,
 			"yaml encoding is not yet implemented")
 	}
-	e := &setEntry{path: "", cur: s.Root, new: new}
-	if err := s.execCallback(e, false); err != nil {
+	e := &setEntry{Path: "/", Cur: s.Root, New: new}
+	if err := s.execSetCallback(e, false); err != nil {
 		return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 			"load %q:: %v", "", err)
 	}
@@ -251,24 +366,22 @@ func (s *Server) setload(startup []byte, encoding Encoding) error {
 	return nil
 }
 
-func (s *Server) execCallback(e *setEntry, revert bool) error {
+func (s *Server) execSetCallback(e *setEntry, rollback bool) error {
 	var cur, new yangtree.DataNode
-	if revert {
-		cur = e.new
-		new = e.cur
-	} else {
-		cur = e.cur
-		new = e.new
+	if !rollback {
+		cur = e.Cur
+		new = e.New
 		s.setBackup = append(s.setBackup, e)
+	} else {
+		cur = e.New
+		new = e.Cur
+		if !e.executed {
+			return nil
+		}
 	}
-	// skip e if not executed
-	if !e.executed {
+	if s.setCallback == nil {
 		return nil
 	}
-
-	if s.setCallback != nil {
-		e.executed = true
-		return s.setCallback.SetCallback(e.op, e.path, cur, new, false)
-	}
-	return nil
+	e.executed = true
+	return s.setCallback.SetCallback(e.Operation, e.Path, cur, new)
 }
