@@ -49,7 +49,7 @@ func yangfiles() ([]string, []string, []string) {
 		"../../../openconfig/public/release/models/openflow/openconfig-openflow.yang",
 		"../../../openconfig/public/release/models/platform/openconfig-platform.yang",
 		"../../../openconfig/public/release/models/system/openconfig-system.yang",
-		"../../../neoul/yangtree/data/sample/sample.yang",
+		"../yang/openconfig-telemetry-dev.yang",
 	}
 	dir := []string{"../../../openconfig/public/", "../../../YangModels/yang"}
 	excluded := []string{"ietf-interfaces"}
@@ -75,6 +75,7 @@ func main() {
 	// gNMI server options
 	gnmiOptions := []server.Option{
 		server.SyncCallbackOption{SyncCallback: subsystem, MinInterval: *syncMinInterval},
+		server.SetCallbackOption{SetCallback: subsystem},
 	}
 
 	// Creates the gRPC server credentials. e.g. ca.crt, server.crt and server.key

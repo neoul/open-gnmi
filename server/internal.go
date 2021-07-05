@@ -2,86 +2,97 @@ package server
 
 import (
 	"fmt"
+	"strconv"
 
+	"github.com/neoul/yangtree"
 	gyangtree "github.com/neoul/yangtree/gnmi"
 	"github.com/openconfig/gnmi/proto/gnmi"
 )
 
-const dynamicTeleSubInfoFormat = `
-telemetry-system:
- subscriptions:
-  dynamic-subscriptions:
-   dynamic-subscription[id=%d]:
-    id: %d
-    state:
-     id: %d
-     destination-address: %s
-     destination-port: %d
-     sample-interval: %d
-     heartbeat-interval: %d
-     suppress-redundant: %v
-     protocol: %s
-     encoding: ENC_%s
-     mode: %s`
+func (s *Server) addDynamicSubscription(subscriber *Subscriber) error {
+	var err error
+	var node yangtree.DataNode
 
-const streamModeFormat = `
-     stream-mode: %s`
+	schema := yangtree.FindSchema(s.RootSchema,
+		"/telemetry-system/subscriptions/dynamic-subscriptions/dynamic-subscription")
+	if schema == nil {
+		return fmt.Errorf("telemetry model not found")
+	}
 
-const dynamicTeleSubInfoPathHeaderFormat = `
-    sensor-paths:
-`
-const dynamicTeleSubInfoPathFormat = `
-     sensor-path[path=%s]:
-      state:
-       path: %s`
-
-func (s *Server) addDynamicSubscription(sub *Subscriber) {
-	var data string
-	switch sub.Mode {
+	subscriber.mutex.Lock()
+	defer subscriber.mutex.Unlock()
+	jsonstr := `{
+		"id": %d,
+		"state": {
+			"id": %d,
+			"destination-address": %q,
+			"destination-port": %d,
+			"sample-interval": %d,
+			"heartbeat-interval": %d,
+			"suppress-redundant": %v,
+			"protocol": %q,
+			"mode": %q
+		}
+	}`
+	switch subscriber.Mode {
 	case gnmi.SubscriptionList_STREAM:
-		data = fmt.Sprintf(dynamicTeleSubInfoFormat,
-			sub.ID, sub.ID, sub.ID,
-			sub.session.Address,
-			sub.session.Port,
-			sub.StreamConfig.SampleInterval,
-			sub.StreamConfig.HeartbeatInterval,
-			sub.StreamConfig.SuppressRedundant,
+		node, err = yangtree.New(schema, fmt.Sprintf(jsonstr,
+			subscriber.ID, subscriber.ID,
+			subscriber.session.Address,
+			subscriber.session.Port,
+			subscriber.StreamConfig.SampleInterval,
+			subscriber.StreamConfig.HeartbeatInterval,
+			subscriber.StreamConfig.SuppressRedundant,
 			"STREAM_GRPC",
-			sub.Encoding,
-			sub.Mode,
-		) + fmt.Sprintf(streamModeFormat+dynamicTeleSubInfoPathHeaderFormat, sub.StreamMode)
+			subscriber.Mode))
+		if err != nil {
+			return err
+		}
+		err = yangtree.Set(node, "state/encoding", "ENC_"+subscriber.Encoding.String())
+		if err != nil {
+			return err
+		}
+		err = yangtree.Set(node, "state/stream-mode", subscriber.StreamMode.String())
+		if err != nil {
+			return err
+		}
 	case gnmi.SubscriptionList_POLL:
-		data = fmt.Sprintf(dynamicTeleSubInfoFormat,
-			sub.ID, sub.ID, sub.ID,
-			sub.session.Address,
-			sub.session.Port,
+		node, err = yangtree.New(schema, fmt.Sprintf(jsonstr,
+			subscriber.ID, subscriber.ID,
+			subscriber.session.Address,
+			subscriber.session.Port,
 			0,
 			0,
 			false,
 			"STREAM_GRPC",
-			sub.Encoding,
-			sub.Mode,
-		) + fmt.Sprintf(dynamicTeleSubInfoPathHeaderFormat)
+			subscriber.Mode))
+		if err != nil {
+			return err
+		}
+		err = yangtree.Set(node, "state/encoding", "ENC_"+subscriber.Encoding.String())
+		if err != nil {
+			return err
+		}
 	default:
-		return
+		return fmt.Errorf("invalid subscription mode")
 	}
-	sub.mutex.Lock()
-	for i := range sub.Paths {
-		p := gyangtree.ToPath(true, sub.Paths[i])
-		data += fmt.Sprintf(dynamicTeleSubInfoPathFormat, p, p)
+	for i := range subscriber.Paths {
+		p := gyangtree.ToPath(true, subscriber.Paths[i])
+		err = yangtree.Set(node, "sensor-paths/sensor-path[path="+p+"]/state/path", p)
+		if err != nil {
+			return err
+		}
 	}
-	sub.mutex.Unlock()
-	// s.iStateUpdate.Write([]byte(data))
+
+	path := "/telemetry-system/subscriptions/dynamic-subscriptions/dynamic-subscription[id=" +
+		strconv.FormatUint(uint64(subscriber.ID), 10) + "]"
+	return s.Merge(path, node)
 }
 
-func (s *Server) deleteDynamicSubscriptionInfo(sub *Subscriber) {
-	// 	data := fmt.Sprintf(`
-	// telemetry-system:
-	//  subscriptions:
-	//   dynamic-subscriptions:
-	//    dynamic-subscription[id=%d]:
-	// `, sub.ID)
-	// s.iStateUpdate.Delete([]byte(data))
+func (s *Server) deleteDynamicSubscriptionInfo(subscriber *Subscriber) error {
+	path := "/telemetry-system/subscriptions/dynamic-subscriptions/dynamic-subscription[id=" +
+		strconv.FormatUint(uint64(subscriber.ID), 10) + "]"
+	return s.Delete(path)
 }
 
 // // GetInternalStateUpdate returns internal StateUpdate channel.

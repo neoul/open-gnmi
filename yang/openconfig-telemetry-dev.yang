@@ -1,0 +1,128 @@
+module openconfig-telemetry-dev {
+  yang-version "1";
+
+  // namespace
+  namespace "urn:open-gnmi:openconfig-telemetry-dev";
+
+  // prefix
+  prefix "openconfig-telemetry-dev";
+
+  import openconfig-extensions { prefix oc-ext; }
+  import openconfig-telemetry { prefix oc-telemetry; }
+  import openconfig-telemetry-types { prefix oc-telemetry-types; }
+
+  // meta
+  organization "open-gnmi";
+
+  contact "neoul@ymail.com";
+
+  description
+    "This module contains telemetry service deviations and augments
+     for gNMI Telemetry Subscription information.";
+
+  oc-ext:openconfig-version "0.1.1";
+
+  revision "2021-07-02" {
+    description
+      "Deviations and augments for openconfig-telemetry model";
+    reference "0.1.1";
+  }
+
+  identity ENC_JSON {
+    base oc-telemetry-types:DATA_ENCODING_METHOD;
+    description
+      "JSON encoded based on Internal JSON Format";
+  }
+
+  deviation /oc-telemetry:telemetry-system/oc-telemetry:sensor-groups {
+    description "persistent-subscriptions is not supported";
+    deviate not-supported;
+  }
+
+  deviation /oc-telemetry:telemetry-system/oc-telemetry:destination-groups {
+    description "persistent-subscriptions is not supported";
+    deviate not-supported;
+  }
+
+  deviation /oc-telemetry:telemetry-system/oc-telemetry:subscriptions/oc-telemetry:persistent-subscriptions {
+    description "persistent-subscriptions is not supported";
+    deviate not-supported;
+  }
+
+  deviation "/oc-telemetry:telemetry-system/oc-telemetry:subscriptions" + 
+      "/oc-telemetry:dynamic-subscriptions/oc-telemetry:dynamic-subscription" + 
+      "/oc-telemetry:sensor-paths/oc-telemetry:sensor-path/oc-telemetry:state/oc-telemetry:exclude-filter" {
+    description "exclude-filter is not supported";
+    deviate not-supported;
+  }
+
+  deviation "/oc-telemetry:telemetry-system/oc-telemetry:subscriptions" + 
+      "/oc-telemetry:dynamic-subscriptions/oc-telemetry:dynamic-subscription" + 
+      "/oc-telemetry:state/oc-telemetry:originated-qos-marking" {
+    description "originated-qos-marking is not supported";
+    deviate not-supported;
+  }
+
+  grouping telemetry-mode {
+    description
+      "Configuration parameters relating to the
+       telemetry subscription mode.";
+
+    leaf mode {
+      type enumeration {
+        enum ONCE {
+          description
+            "A subscription operating in the ONCE mode acts as a single 
+            request/response channel. The target creates the relevant 
+            update messages, transmits them, and subsequently closes the RPC.";
+        }
+        enum POLL {
+          description
+            "Polling subscriptions are used for on-demand retrieval 
+            of data via long-lived RPCs. A poll subscription relates 
+            to a certain set of subscribed paths, and is initiated 
+            by sending a request message. Once the request message is received,
+            the update messages are transmitted by the client's poll request message.";
+        }
+        enum STREAM {
+          description
+            "Stream subscriptions are long-lived subscriptions which 
+            continue to transmit updates relating to the set of paths 
+            that are covered within the subscription indefinitely.";
+        }
+      }
+      description
+        "Selection of the telemetry subscription mode.";
+    }
+
+    leaf stream-mode {
+      description
+        "Selection of the type of the stream mode.";
+      type enumeration {
+        enum TARGET_DEFINED {
+          description
+            "When a client creates a subscription specifying the target defined mode, 
+            the target MUST determine the best type of subscription to be created 
+            on a per-leaf basis.";
+        }
+        enum ON_CHANGE {
+          description
+            "When a subscription is defined to be 'on change', data updates are 
+            only sent when the value of the data item changes.";
+        }
+        enum SAMPLE {
+          description
+            "When a subscription is defined to be 'sampled', data updates are sent
+            every sample interval.";
+        }
+      }
+    }
+  }
+
+  augment "/oc-telemetry:telemetry-system/oc-telemetry:subscriptions" + 
+      "/oc-telemetry:dynamic-subscriptions/oc-telemetry:dynamic-subscription" + 
+      "/oc-telemetry:state" {
+    description "Added telemetry subscription mode and stream mode";
+    uses telemetry-mode;
+  }
+}

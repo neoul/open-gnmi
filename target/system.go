@@ -305,7 +305,6 @@ func (system *System) SyncCallback(path ...string) error {
 	return nil
 }
 
-func (system *System) SetCallback(op gnmipb.UpdateResult_Operation,
-	path string, cur, new yangtree.DataNode, rollback bool) error {
+func (system *System) SetCallback(op gnmipb.UpdateResult_Operation, path string, cur, new yangtree.DataNode) error {
 	return nil
 }

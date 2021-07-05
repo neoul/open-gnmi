@@ -216,11 +216,18 @@ func (s *Server) AllSchemaPaths() []string {
 func (s *Server) Load(startup []byte, encoding Encoding) error {
 	s.Lock()
 	defer s.Unlock()
-	if err := s.setLoad(startup, encoding); err != nil {
-		return err
+	err := s.setStart(false)
+	if err == nil {
+		err = s.setLoad(startup, encoding)
 	}
-	s.setDone()
-	return nil
+	err = s.setEnd(err)
+	if err != nil {
+		s.setStart(true)
+		s.setRollback()
+		s.setEnd(nil)
+	}
+	s.setDone(err)
+	return err
 }
 
 // CheckEncoding checks whether encoding and models are supported by the server.
@@ -532,7 +539,7 @@ func (s *Server) set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 	s.Lock()
 	defer s.Unlock()
 
-	err = s.setStart()
+	err = s.setStart(false)
 	for _, path := range req.GetDelete() {
 		if err != nil {
 			result = append(result, buildUpdateResultAborted(gnmipb.UpdateResult_DELETE, path))
@@ -559,13 +566,13 @@ func (s *Server) set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 		err = s.setUpdate(prefix, path, u.GetVal())
 		result = append(result, buildUpdateResult(gnmipb.UpdateResult_UPDATE, path, err))
 	}
-	if err == nil {
-		err = s.setCommit()
-	}
+	err = s.setEnd(err)
 	if err != nil {
+		s.setStart(true)
 		s.setRollback()
+		s.setEnd(nil)
 	}
-	s.setDone()
+	s.setDone(err)
 	resp := &gnmipb.SetResponse{
 		Prefix:   prefix,
 		Response: result,

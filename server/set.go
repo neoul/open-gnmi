@@ -97,40 +97,45 @@ func (s *Server) setInit(opts ...Option) error {
 }
 
 // setStart initializes the Set transaction.
-func (s *Server) setStart() error {
-	s.setSeq++
-	s.setBackup = nil
-	if s.setTransaction == nil {
-		return nil
+func (s *Server) setStart(rollback bool) error {
+	if !rollback {
+		s.setSeq++
+		s.setBackup = nil
 	}
-	err := s.setTransaction.SetStart(s.setSeq, false)
-	if err != nil {
-		if glog.V(10) {
-			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.start error: %v", err))
+	if s.setTransaction != nil {
+		err := s.setTransaction.SetStart(s.setSeq, rollback)
+		if err != nil {
+			if glog.V(10) {
+				glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
+					"set.start error: %v", err))
+			}
 		}
+		return err
 	}
-	return err
+	return nil
 }
 
-// setCommit ends the Set transaction.
-func (s *Server) setCommit() error {
+// setEnd ends the Set transaction.
+func (s *Server) setEnd(err error) error {
 	if s.setTransaction == nil {
-		return nil
+		return err
 	}
-	err := s.setTransaction.SetEnd(s.setSeq)
-	if err != nil {
+	enderr := s.setTransaction.SetEnd(s.setSeq)
+	if enderr != nil {
 		if glog.V(10) {
 			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.complete error: %v", err))
+				"set.end error: %v", enderr))
 		}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return enderr
 }
 
 // setDone clears the rollback data and resets all configuration in order to receive updates from the system.
-func (s *Server) setDone() {
-	if !s.setUpdatedByServer {
+func (s *Server) setDone(err error) {
+	if !s.setUpdatedByServer || err != nil {
 		// The set data is reverted to the previous data if the setUpdatedByServer is disabled.
 		// The set data must be updated by the system, not the gnmi server.
 		for _, e := range s.setBackup {
@@ -152,18 +157,15 @@ func (s *Server) setDone() {
 		}
 	}
 	s.setBackup = nil
+	if glog.V(10) {
+		glog.Infof("set.done")
+	}
 }
 
 // setRollback executes setIndirect to revert the configuration.
 func (s *Server) setRollback() {
 	if s.setTransaction == nil {
 		return
-	}
-	if err := s.setTransaction.SetStart(s.setSeq, true); err != nil {
-		if glog.V(10) {
-			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.rollback: %v", err))
-		}
 	}
 	for _, e := range s.setBackup {
 		if glog.V(10) {
@@ -175,12 +177,6 @@ func (s *Server) setRollback() {
 				glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 					"set.rollback %q: %v", e.Path, err))
 			}
-		}
-	}
-	if err := s.setTransaction.SetEnd(s.setSeq); err != nil {
-		if glog.V(10) {
-			glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
-				"set.rollback error: %v", err))
 		}
 	}
 }

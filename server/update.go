@@ -7,6 +7,29 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
+func (s *Server) Merge(path string, node yangtree.DataNode) error {
+	s.Lock()
+	defer s.Unlock()
+	c, r, err := yangtree.MergeDiff(s.Root, path, node)
+	if err != nil {
+		err := status.TaggedErrorf(codes.Internal,
+			status.TagOperationFail, "merge %s: %v", path, err)
+		if glog.V(10) {
+			glog.Error(err)
+		}
+		return err
+	}
+	if err := s.Event.SetEvent(c, r, nil); err != nil {
+		err := status.TaggedErrorf(codes.Internal,
+			status.TagOperationFail, "merge %s: %v", path, err)
+		if glog.V(10) {
+			glog.Error(err)
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Server) Write(path string, value ...string) error {
 	s.Lock()
 	defer s.Unlock()
