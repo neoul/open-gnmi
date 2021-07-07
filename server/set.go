@@ -172,7 +172,7 @@ func (s *Server) setRollback() {
 			glog.Infof("set.rollback %q", e.Path)
 		}
 		// error is ignored on rollback
-		if err := s.execSetCallback(e, true); err != nil {
+		if err := execSetCallback(s.setCallback, e, true); err != nil {
 			if glog.V(10) {
 				glog.Error(status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 					"set.rollback %q: %v", e.Path, err))
@@ -216,7 +216,8 @@ func (s *Server) setDelete(prefix, path *gnmipb.Path) error {
 				"set.delete %q: %v", path, err)
 		}
 		e := &setEntry{Operation: gnmipb.UpdateResult_DELETE, Path: path, Cur: node, New: nil}
-		if err := s.execSetCallback(e, false); err != nil {
+		s.setBackup = append(s.setBackup, e)
+		if err := execSetCallback(s.setCallback, e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.delete %q: %v", path, err)
 		}
@@ -275,7 +276,8 @@ func (s *Server) setReplace(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedV
 			}
 		}
 		e := &setEntry{Operation: gnmipb.UpdateResult_REPLACE, Path: new.Path(), Cur: cur, New: new}
-		if err := s.execSetCallback(e, false); err != nil {
+		s.setBackup = append(s.setBackup, e)
+		if err := execSetCallback(s.setCallback, e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.replace %q: %v", new.Path(), err)
 		}
@@ -329,7 +331,8 @@ func (s *Server) setUpdate(prefix, path *gnmipb.Path, typedvalue *gnmipb.TypedVa
 		}
 
 		e := &setEntry{Operation: gnmipb.UpdateResult_REPLACE, Path: new.Path(), Cur: backup, New: new}
-		if err := s.execSetCallback(e, false); err != nil {
+		s.setBackup = append(s.setBackup, e)
+		if err := execSetCallback(s.setCallback, e, false); err != nil {
 			return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 				"set.update %q: %v", new.Path(), err)
 		}
@@ -354,7 +357,8 @@ func (s *Server) setLoad(startup []byte, encoding Encoding) error {
 			"yaml encoding is not yet implemented")
 	}
 	e := &setEntry{Path: "/", Cur: s.Root, New: new}
-	if err := s.execSetCallback(e, false); err != nil {
+	s.setBackup = append(s.setBackup, e)
+	if err := execSetCallback(s.setCallback, e, false); err != nil {
 		return status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 			"load %q:: %v", "", err)
 	}
@@ -362,12 +366,14 @@ func (s *Server) setLoad(startup []byte, encoding Encoding) error {
 	return nil
 }
 
-func (s *Server) execSetCallback(e *setEntry, rollback bool) error {
+func execSetCallback(setcallback SetCallback, e *setEntry, rollback bool) error {
+	if setcallback == nil {
+		return nil
+	}
 	var cur, new yangtree.DataNode
 	if !rollback {
 		cur = e.Cur
 		new = e.New
-		s.setBackup = append(s.setBackup, e)
 	} else {
 		cur = e.New
 		new = e.Cur
@@ -375,9 +381,6 @@ func (s *Server) execSetCallback(e *setEntry, rollback bool) error {
 			return nil
 		}
 	}
-	if s.setCallback == nil {
-		return nil
-	}
 	e.executed = true
-	return s.setCallback.SetCallback(e.Operation, e.Path, cur, new)
+	return setcallback.SetCallback(e.Operation, e.Path, cur, new)
 }
