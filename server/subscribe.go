@@ -450,10 +450,10 @@ func (subscriber *Subscriber) EventReceive(eventdata interface{}, event ChangeEv
 			edata.changes, _ =
 				yangtree.New(subscriber.session.RootSchema)
 		}
-		node, _ := yangtree.Find(subscriber.session.Root, path)
-		for i := range node {
-			if err := yangtree.Merge(edata.changes, path, node[i]); err != nil {
-
+		if event == EventCreate || event == EventReplace {
+			node, _ := yangtree.Find(subscriber.session.Root, path)
+			for i := range node {
+				yangtree.Merge(edata.changes, path, node[i])
 			}
 		}
 	}
