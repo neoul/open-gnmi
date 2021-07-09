@@ -22,17 +22,17 @@ import (
 )
 
 // Transaction Event defines the telemetry update event delivered by Subscribe RPC.
-type ChangeEvent int32
+type EventType int32
 
 const (
-	EventStart    ChangeEvent = 0
-	EventCreate   ChangeEvent = 1
-	EventReplace  ChangeEvent = 2
-	EventDelete   ChangeEvent = 3
-	EventComplete ChangeEvent = 4
+	EventStart    EventType = 0
+	EventCreate   EventType = 1
+	EventReplace  EventType = 2
+	EventDelete   EventType = 3
+	EventComplete EventType = 4
 )
 
-func (x ChangeEvent) String() string {
+func (x EventType) String() string {
 	switch x {
 	case EventCreate:
 		return "create"
@@ -54,26 +54,12 @@ type ObjID uint64
 type Duplicates struct {
 	Count uint32
 }
-type EventData struct {
-	changes     yangtree.DataNode
-	updatedList *gtrie.Trie
-	deletedList *gtrie.Trie
-}
-
-func (event *EventData) Clear() {
-	if event == nil {
-		return
-	}
-	event.updatedList.Clear()
-	event.deletedList.Clear()
-	event.changes = nil
-}
 
 // Event Control Block
 type EventReceiver interface {
 	IsEventReceiver()
-	EventReceive(interface{}, ChangeEvent, string) interface{} // eventdata, change-event, path
-	EventComplete(interface{}) bool                            // It processes the event data and returns the event data is consumed.
+	EventReceive(EventType, string)
+	EventComplete()
 	EventPath() []string
 }
 
@@ -82,7 +68,7 @@ type EventRecvGroup map[EventReceiver]EventReceiver
 // gNMI Telemetry Control Block
 type EventCtrl struct {
 	Receivers  *gtrie.Trie // EventRecvGroup indexed by path
-	Ready      map[EventReceiver]interface{}
+	Ready      map[EventReceiver]struct{}
 	rootschema *yang.Entry
 	mutex      *sync.Mutex
 }
@@ -90,7 +76,7 @@ type EventCtrl struct {
 func newEventCtrl(schema *yang.Entry) *EventCtrl {
 	return &EventCtrl{
 		Receivers:  gtrie.New(),
-		Ready:      make(map[EventReceiver]interface{}),
+		Ready:      make(map[EventReceiver]struct{}),
 		rootschema: schema,
 		mutex:      &sync.Mutex{},
 	}
@@ -133,7 +119,7 @@ func (ec *EventCtrl) Unregister(eReceiver EventReceiver) {
 }
 
 // setReady() sets gnmi event.
-func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error {
+func (ec *EventCtrl) setReady(event EventType, node []yangtree.DataNode) error {
 	for i := range node {
 		if glog.V(11) {
 			glog.Infof("event: on-change in %q", node[i].Path())
@@ -144,8 +130,8 @@ func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error
 		for _, group := range ec.Receivers.FindAll(node[i].Path()) {
 			egroup := group.(EventRecvGroup)
 			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = eReceiver.EventReceive(
-					ec.Ready[eReceiver], event, node[i].Path())
+				ec.Ready[eReceiver] = struct{}{}
+				eReceiver.EventReceive(event, node[i].Path())
 			}
 		}
 		schema := node[i].Schema()
@@ -154,8 +140,8 @@ func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error
 			for _, group := range ec.Receivers.FindAll(schemapath) {
 				egroup := group.(EventRecvGroup)
 				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = eReceiver.EventReceive(
-						ec.Ready[eReceiver], event, node[i].Path())
+					ec.Ready[eReceiver] = struct{}{}
+					eReceiver.EventReceive(event, node[i].Path())
 				}
 			}
 		}
@@ -164,7 +150,7 @@ func (ec *EventCtrl) setReady(event ChangeEvent, node []yangtree.DataNode) error
 }
 
 // setReady() sets gnmi event.
-func (ec *EventCtrl) setReadyByPath(event ChangeEvent, path []string) error {
+func (ec *EventCtrl) setReadyByPath(event EventType, path []string) error {
 	for i := range path {
 		if glog.V(11) {
 			glog.Infof("event: on-change in %q", path[i])
@@ -172,8 +158,8 @@ func (ec *EventCtrl) setReadyByPath(event ChangeEvent, path []string) error {
 		for _, group := range ec.Receivers.FindAll(path[i]) {
 			egroup := group.(EventRecvGroup)
 			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = eReceiver.EventReceive(
-					ec.Ready[eReceiver], event, path[i])
+				ec.Ready[eReceiver] = struct{}{}
+				eReceiver.EventReceive(event, path[i])
 			}
 		}
 		schemapath, ok := yangtree.RemovePredicates(&(path[i]))
@@ -181,8 +167,8 @@ func (ec *EventCtrl) setReadyByPath(event ChangeEvent, path []string) error {
 			for _, group := range ec.Receivers.FindAll(schemapath) {
 				egroup := group.(EventRecvGroup)
 				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = eReceiver.EventReceive(
-						ec.Ready[eReceiver], event, path[i])
+					ec.Ready[eReceiver] = struct{}{}
+					eReceiver.EventReceive(event, path[i])
 				}
 			}
 		}
@@ -204,10 +190,9 @@ func (ec *EventCtrl) SetEvent(c, r, d []yangtree.DataNode) error {
 		return err
 	}
 	// current event consumed at the end.
-	for eReceiver, edata := range ec.Ready {
-		if eReceiver.EventComplete(edata) {
-			delete(ec.Ready, eReceiver)
-		}
+	for eReceiver := range ec.Ready {
+		eReceiver.EventComplete()
+		delete(ec.Ready, eReceiver)
 	}
 	return nil
 }
@@ -226,20 +211,11 @@ func (ec *EventCtrl) SetEventByPath(c, r, d []string) error {
 		return err
 	}
 	// current event consumed at the end.
-	for eReceiver, edata := range ec.Ready {
-		if eReceiver.EventComplete(edata) {
-			delete(ec.Ready, eReceiver)
-		}
+	for eReceiver := range ec.Ready {
+		eReceiver.EventComplete()
+		delete(ec.Ready, eReceiver)
 	}
 	return nil
-}
-
-func (ec *EventCtrl) GetEvent(eventcb EventReceiver) interface{} {
-	ec.mutex.Lock()
-	defer ec.mutex.Unlock()
-	event := ec.Ready[eventcb]
-	delete(ec.Ready, eventcb)
-	return event
 }
 
 type subscribeResponseChannel interface {
@@ -377,7 +353,22 @@ func (subses *SubSession) Stop() {
 	subses.Server.Unlock()
 }
 
-// Subscriber - Stream Subscription structure for Telemetry Update
+type ChangeEvent struct {
+	changes     yangtree.DataNode
+	updatedList *gtrie.Trie
+	deletedList *gtrie.Trie
+}
+
+func (event *ChangeEvent) Clear() {
+	if event == nil {
+		return
+	}
+	event.updatedList.Clear()
+	event.deletedList.Clear()
+	event.changes = nil
+}
+
+// Subscriber - Telemetry Subscription structure for Telemetry Update
 type Subscriber struct {
 	ID                ObjID
 	SessionID         ObjID
@@ -402,7 +393,8 @@ type Subscriber struct {
 
 	// internal data
 	session *SubSession
-	event   chan *EventData
+	event   chan *ChangeEvent
+	pending *ChangeEvent
 	started bool
 	mutex   *sync.Mutex
 
@@ -418,31 +410,30 @@ type Subscriber struct {
 
 func (subscriber *Subscriber) IsEventReceiver() {}
 
-func (subscriber *Subscriber) EventComplete(edata interface{}) (consumed bool) {
+func (subscriber *Subscriber) EventComplete() {
 	switch subscriber.StreamMode {
 	case gnmipb.SubscriptionMode_ON_CHANGE:
-		if subscriber.event != nil && edata != nil {
-			subscriber.event <- edata.(*EventData)
+		if subscriber.event != nil && subscriber.pending != nil {
+			subscriber.event <- subscriber.pending
+			subscriber.pending = nil
 			if glog.V(11) {
 				subses := subscriber.session
 				glog.Infof("telemetry.event sent to subscribe[%s:%d:%d].stream[%d]",
 					subses.Address, subses.Port, subses.ID, subscriber.ID)
 			}
 		}
-		consumed = true
 	}
-	return
 }
 
-func (subscriber *Subscriber) EventReceive(eventdata interface{}, event ChangeEvent, path string) interface{} {
-	var edata *EventData
-	if _, ok := eventdata.(*EventData); eventdata == nil || !ok {
-		edata = &EventData{
+func (subscriber *Subscriber) EventReceive(event EventType, path string) {
+	var edata *ChangeEvent
+	if subscriber.pending == nil {
+		edata = &ChangeEvent{
 			updatedList: gtrie.New(),
 			deletedList: gtrie.New(),
 		}
 	} else {
-		edata = eventdata.(*EventData)
+		edata = subscriber.pending
 	}
 	switch subscriber.StreamMode {
 	case gnmipb.SubscriptionMode_ON_CHANGE:
@@ -474,7 +465,7 @@ func (subscriber *Subscriber) EventReceive(eventdata interface{}, event ChangeEv
 			v.(*Duplicates).Count++
 		}
 	}
-	return edata
+	subscriber.pending = edata
 }
 
 func (subscriber *Subscriber) EventPath() []string {
@@ -580,8 +571,7 @@ func (subscriber *Subscriber) run() {
 			}
 			expired <- true
 		case mustSend := <-expired:
-			edata := subses.Event.GetEvent(subscriber)
-			event := edata.(*EventData)
+			event := subscriber.pending
 			if !mustSend && event != nil {
 				// suppress_redundant - skips the telemetry update if no changes
 				if event.updatedList.Size() > 0 ||
@@ -610,7 +600,7 @@ func (subscriber *Subscriber) run() {
 	}
 }
 
-func getDeletes(path string, deleteOnly bool, event *EventData) ([]*gnmipb.Path, error) {
+func getDeletes(path string, deleteOnly bool, event *ChangeEvent) ([]*gnmipb.Path, error) {
 	if event == nil {
 		return nil, nil
 	}
@@ -634,7 +624,7 @@ func getDeletes(path string, deleteOnly bool, event *EventData) ([]*gnmipb.Path,
 }
 
 // getUpdates() returns updates with duplicates.
-func getUpdates(branch, data yangtree.DataNode, encoding gnmipb.Encoding, event *EventData) (*gnmipb.Update, error) {
+func getUpdates(branch, data yangtree.DataNode, encoding gnmipb.Encoding, event *ChangeEvent) (*gnmipb.Update, error) {
 	// FIXME - need to check an empty notification is valid.
 	// if ydb.IsEmptyInterface(data.Value) {
 	// 	return nil, nil
@@ -685,7 +675,7 @@ func (subses *SubSession) serverAliasesUpdate() {
 // initTelemetryUpdate - Process and generate responses for a init update.
 func (subses *SubSession) initTelemetryUpdate(
 	prefix *gnmipb.Path, paths []*gnmipb.Path,
-	updatesOnly bool, encoding gnmipb.Encoding, event *EventData) error {
+	updatesOnly bool, encoding gnmipb.Encoding, event *ChangeEvent) error {
 
 	if updatesOnly {
 		return subses.respchan.Send(buildSyncResponse())
@@ -747,7 +737,7 @@ func (subses *SubSession) initTelemetryUpdate(
 }
 
 // telemetryUpdate - Process and generate responses for a telemetry update.
-func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *EventData) error {
+func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *ChangeEvent) error {
 	prefix := sub.Prefix
 	encoding := sub.Encoding
 	mode := sub.Mode
@@ -901,7 +891,7 @@ func (subses *SubSession) addSubscription(name string,
 		SuppressRedundant: SuppressRedundant,
 		HeartbeatInterval: HeartbeatInterval,
 
-		event:   make(chan *EventData, 16),
+		event:   make(chan *ChangeEvent, 16),
 		mutex:   &sync.Mutex{},
 		session: subses,
 		key:     key,
@@ -993,23 +983,19 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 	// SubscribeRequest for poll Subscription indication
 	pollMode := req.GetPoll()
 	if pollMode != nil {
-		for _, sub := range subses.Sub {
-			if sub.Mode != gnmipb.SubscriptionList_POLL {
+		for _, subscriber := range subses.Sub {
+			if subscriber.Mode != gnmipb.SubscriptionList_POLL {
 				continue
 			}
-			subses.syncRequest(sub.Prefix, sub.Paths)
-			edata := subses.Event.GetEvent(sub)
-			var event *EventData
-			if edata != nil {
-				event = edata.(*EventData)
-			}
+			subses.syncRequest(subscriber.Prefix, subscriber.Paths)
+			eventPending := subscriber.pending
 			if err := subses.initTelemetryUpdate(
-				sub.Prefix, sub.Paths, false, sub.Encoding, event); err != nil {
+				subscriber.Prefix, subscriber.Paths, false, subscriber.Encoding, eventPending); err != nil {
 				if glog.V(11) {
-					glog.Errorf("subses[%d].poll[%d] %v", subses.ID, sub.ID, err)
+					glog.Errorf("subses[%d].poll[%d] %v", subses.ID, subscriber.ID, err)
 				}
 			}
-			event.Clear()
+			eventPending.Clear()
 		}
 		return nil
 	}

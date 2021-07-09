@@ -81,12 +81,10 @@ func (e *syncEvent) String() string { return "sync." + e.regPath }
 func (e *syncEvent) IsEventReceiver() {}
 
 // EventComplete is the EventReceiver interface for sync
-func (e *syncEvent) EventComplete(interface{}) bool {
-	return true
-}
+func (e *syncEvent) EventComplete() {}
 
 // EventReceive is the EventReceiver interface for sync
-func (e *syncEvent) EventReceive(edata interface{}, event ChangeEvent, path string) interface{} {
+func (e *syncEvent) EventReceive(event EventType, path string) {
 	if yangtree.FindSchema(e.RootSchema, path) == e.schema {
 		switch event {
 		case EventCreate:
@@ -101,7 +99,6 @@ func (e *syncEvent) EventReceive(edata interface{}, event ChangeEvent, path stri
 			e.syncPath.Remove(path)
 		}
 	}
-	return nil
 }
 
 // EventPath is the EventReceiver interface for sync
