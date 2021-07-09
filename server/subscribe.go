@@ -16,207 +16,12 @@ import (
 	"github.com/neoul/yangtree"
 	gyangtree "github.com/neoul/yangtree/gnmi"
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
-	"github.com/openconfig/goyang/pkg/yang"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 )
 
-// Transaction Event defines the telemetry update event delivered by Subscribe RPC.
-type EventType int32
-
-const (
-	EventStart    EventType = 0
-	EventCreate   EventType = 1
-	EventReplace  EventType = 2
-	EventDelete   EventType = 3
-	EventComplete EventType = 4
-)
-
-func (x EventType) String() string {
-	switch x {
-	case EventCreate:
-		return "create"
-	case EventReplace:
-		return "replace"
-	case EventDelete:
-		return "delete"
-	case EventStart:
-		return "start"
-	case EventComplete:
-		return "complete"
-	default:
-		return "?"
-	}
-}
-
 // ObjID - gnmi server object ID
 type ObjID uint64
-type Duplicates struct {
-	Count uint32
-}
-
-// Event Control Block
-type EventReceiver interface {
-	IsEventReceiver()
-	EventReceive(EventType, string)
-	EventComplete()
-	EventPath() []string
-}
-
-type EventRecvGroup map[EventReceiver]EventReceiver
-
-// gNMI Telemetry Control Block
-type EventCtrl struct {
-	Receivers  *gtrie.Trie // EventRecvGroup indexed by path
-	Ready      map[EventReceiver]struct{}
-	rootschema *yang.Entry
-	mutex      *sync.Mutex
-}
-
-func newEventCtrl(schema *yang.Entry) *EventCtrl {
-	return &EventCtrl{
-		Receivers:  gtrie.New(),
-		Ready:      make(map[EventReceiver]struct{}),
-		rootschema: schema,
-		mutex:      &sync.Mutex{},
-	}
-}
-
-func (ec *EventCtrl) Register(eReceiver EventReceiver) error {
-	ec.mutex.Lock()
-	defer ec.mutex.Unlock()
-	eventpath := eReceiver.EventPath()
-	for i := range eventpath {
-		if group, ok := ec.Receivers.Find(eventpath[i]); ok {
-			group.(EventRecvGroup)[eReceiver] = eReceiver
-		} else {
-			ec.Receivers.Add(eventpath[i], EventRecvGroup{eReceiver: eReceiver})
-		}
-		if glog.V(11) {
-			glog.Infof("event: %q registered by %q", eventpath[i], eReceiver)
-		}
-	}
-	return nil
-}
-
-func (ec *EventCtrl) Unregister(eReceiver EventReceiver) {
-	ec.mutex.Lock()
-	defer ec.mutex.Unlock()
-	all := ec.Receivers.All()
-	for eventpath, group := range all {
-		egroup := group.(EventRecvGroup)
-		if _, ok := egroup[eReceiver]; ok {
-			if glog.V(11) {
-				glog.Infof("event: %q unregistered by %q", eventpath, eReceiver)
-			}
-			delete(egroup, eReceiver)
-			if len(egroup) == 0 {
-				ec.Receivers.Remove(eventpath)
-			}
-		}
-	}
-	delete(ec.Ready, eReceiver)
-}
-
-// setReady() sets gnmi event.
-func (ec *EventCtrl) setReady(event EventType, node []yangtree.DataNode) error {
-	for i := range node {
-		if glog.V(11) {
-			glog.Infof("event: on-change in %q", node[i].Path())
-		}
-		if !yangtree.IsValid(node[i]) {
-			return fmt.Errorf("invalid node inserted for gnmi update event")
-		}
-		for _, group := range ec.Receivers.FindAll(node[i].Path()) {
-			egroup := group.(EventRecvGroup)
-			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = struct{}{}
-				eReceiver.EventReceive(event, node[i].Path())
-			}
-		}
-		schema := node[i].Schema()
-		if yangtree.HasUniqueListParent(schema) {
-			schemapath := yangtree.GeneratePath(schema, false, false)
-			for _, group := range ec.Receivers.FindAll(schemapath) {
-				egroup := group.(EventRecvGroup)
-				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = struct{}{}
-					eReceiver.EventReceive(event, node[i].Path())
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// setReady() sets gnmi event.
-func (ec *EventCtrl) setReadyByPath(event EventType, path []string) error {
-	for i := range path {
-		if glog.V(11) {
-			glog.Infof("event: on-change in %q", path[i])
-		}
-		for _, group := range ec.Receivers.FindAll(path[i]) {
-			egroup := group.(EventRecvGroup)
-			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = struct{}{}
-				eReceiver.EventReceive(event, path[i])
-			}
-		}
-		schemapath, ok := yangtree.RemovePredicates(&(path[i]))
-		if ok {
-			for _, group := range ec.Receivers.FindAll(schemapath) {
-				egroup := group.(EventRecvGroup)
-				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = struct{}{}
-					eReceiver.EventReceive(event, path[i])
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// SetEvent() sets gnmi event.
-func (ec *EventCtrl) SetEvent(c, r, d []yangtree.DataNode) error {
-	ec.mutex.Lock()
-	defer ec.mutex.Unlock()
-	if err := ec.setReady(EventCreate, c); err != nil {
-		return err
-	}
-	if err := ec.setReady(EventReplace, r); err != nil {
-		return err
-	}
-	if err := ec.setReady(EventDelete, d); err != nil {
-		return err
-	}
-	// current event consumed at the end.
-	for eReceiver := range ec.Ready {
-		eReceiver.EventComplete()
-		delete(ec.Ready, eReceiver)
-	}
-	return nil
-}
-
-// SetEventByPath() sets gnmi event.
-func (ec *EventCtrl) SetEventByPath(c, r, d []string) error {
-	ec.mutex.Lock()
-	defer ec.mutex.Unlock()
-	if err := ec.setReadyByPath(EventCreate, c); err != nil {
-		return err
-	}
-	if err := ec.setReadyByPath(EventReplace, r); err != nil {
-		return err
-	}
-	if err := ec.setReadyByPath(EventDelete, d); err != nil {
-		return err
-	}
-	// current event consumed at the end.
-	for eReceiver := range ec.Ready {
-		eReceiver.EventComplete()
-		delete(ec.Ready, eReceiver)
-	}
-	return nil
-}
 
 type subscribeResponseChannel interface {
 	Channel() chan *gnmipb.SubscribeResponse
@@ -353,6 +158,10 @@ func (subses *SubSession) Stop() {
 	subses.Server.Unlock()
 }
 
+type Duplicates struct {
+	Count uint32
+}
+
 type ChangeEvent struct {
 	changes     yangtree.DataNode
 	updatedList *gtrie.Trie
@@ -410,7 +219,7 @@ type Subscriber struct {
 
 func (subscriber *Subscriber) IsEventReceiver() {}
 
-func (subscriber *Subscriber) EventComplete() {
+func (subscriber *Subscriber) EventComplete(eid uint) {
 	switch subscriber.StreamMode {
 	case gnmipb.SubscriptionMode_ON_CHANGE:
 		if subscriber.event != nil && subscriber.pending != nil {
@@ -425,7 +234,7 @@ func (subscriber *Subscriber) EventComplete() {
 	}
 }
 
-func (subscriber *Subscriber) EventReceive(event EventType, path string) {
+func (subscriber *Subscriber) EventReceive(eid uint, event EventType, path string) {
 	var edata *ChangeEvent
 	if subscriber.pending == nil {
 		edata = &ChangeEvent{
