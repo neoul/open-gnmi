@@ -162,18 +162,18 @@ type Duplicates struct {
 	Count uint32
 }
 
-type ChangeEvent struct {
-	changes     yangtree.DataNode
-	updatedList *gtrie.Trie
-	deletedList *gtrie.Trie
+type changeEvent struct {
+	changes yangtree.DataNode
+	updated *gtrie.Trie
+	deleted *gtrie.Trie
 }
 
-func (event *ChangeEvent) Clear() {
+func (event *changeEvent) Clear() {
 	if event == nil {
 		return
 	}
-	event.updatedList.Clear()
-	event.deletedList.Clear()
+	event.updated.Clear()
+	event.deleted.Clear()
 	event.changes = nil
 }
 
@@ -201,11 +201,11 @@ type Subscriber struct {
 	}
 
 	// internal data
-	session *SubSession
-	event   chan *ChangeEvent
-	pending *ChangeEvent
-	started bool
-	mutex   *sync.Mutex
+	session  *SubSession
+	onchange chan *changeEvent // event channel for on-change event
+	pending  *changeEvent      // event pending
+	started  bool
+	mutex    *sync.Mutex
 
 	// // https://github.com/openconfig/gnmi/issues/45 - QoSMarking issue
 	// Qos              *gnmipb.QOSMarking           `json:"qos,omitempty"`          // DSCP marking to be used.
@@ -217,29 +217,34 @@ type Subscriber struct {
 	// 2. keys (The path to the subscription data)
 }
 
-func (subscriber *Subscriber) IsEventReceiver() {}
+// EventReceiver interface for Telemetry subscription
+func (subscriber *Subscriber) EventStart(uint) {}
 
+// EventReceiver interface for Telemetry subscription
 func (subscriber *Subscriber) EventComplete(eid uint) {
 	switch subscriber.StreamMode {
 	case gnmipb.SubscriptionMode_ON_CHANGE:
-		if subscriber.event != nil && subscriber.pending != nil {
-			subscriber.event <- subscriber.pending
-			subscriber.pending = nil
-			if glog.V(11) {
-				subses := subscriber.session
-				glog.Infof("telemetry.event sent to subscribe[%s:%d:%d].stream[%d]",
-					subses.Address, subses.Port, subses.ID, subscriber.ID)
+		if subscriber.onchange != nil {
+			if subscriber.pending != nil {
+				if glog.V(11) {
+					subses := subscriber.session
+					glog.Infof("telemetry.event sent to subscribe[%s:%d:%d].stream[%d]",
+						subses.Address, subses.Port, subses.ID, subscriber.ID)
+				}
+				subscriber.onchange <- subscriber.pending
 			}
 		}
+		subscriber.pending = nil
 	}
 }
 
+// EventReceiver interface for Telemetry subscription
 func (subscriber *Subscriber) EventReceive(eid uint, event EventType, path string) {
-	var edata *ChangeEvent
+	var edata *changeEvent
 	if subscriber.pending == nil {
-		edata = &ChangeEvent{
-			updatedList: gtrie.New(),
-			deletedList: gtrie.New(),
+		edata = &changeEvent{
+			updated: gtrie.New(),
+			deleted: gtrie.New(),
 		}
 	} else {
 		edata = subscriber.pending
@@ -260,16 +265,16 @@ func (subscriber *Subscriber) EventReceive(eid uint, event EventType, path strin
 
 	switch event {
 	case EventCreate, EventReplace:
-		if v, ok := edata.updatedList.Find(path); !ok {
-			edata.updatedList.Add(path, &Duplicates{Count: 1})
+		if v, ok := edata.updated.Find(path); !ok {
+			edata.updated.Add(path, &Duplicates{Count: 1})
 		} else {
 			v.(*Duplicates).Count++
 		}
 	}
 	switch event {
 	case EventReplace, EventDelete:
-		if v, ok := edata.deletedList.Find(path); !ok {
-			edata.deletedList.Add(path, &Duplicates{Count: 1})
+		if v, ok := edata.deleted.Find(path); !ok {
+			edata.deleted.Add(path, &Duplicates{Count: 1})
 		} else {
 			v.(*Duplicates).Count++
 		}
@@ -277,6 +282,7 @@ func (subscriber *Subscriber) EventReceive(eid uint, event EventType, path strin
 	subscriber.pending = edata
 }
 
+// EventReceiver interface for Telemetry subscription
 func (subscriber *Subscriber) EventPath() []string {
 	var eventpath []string
 	rootschema := subscriber.session.RootSchema
@@ -339,7 +345,7 @@ func (subscriber *Subscriber) run() {
 					subses.Address, subses.Port, subses.ID, subscriber.ID)
 			}
 			return
-		case event, ok := <-subscriber.event:
+		case event, ok := <-subscriber.onchange:
 			if !ok {
 				if glog.V(11) {
 					glog.Errorf("subscribe[%s:%d:%d].stream[%d]:: event-queue closed",
@@ -383,8 +389,8 @@ func (subscriber *Subscriber) run() {
 			event := subscriber.pending
 			if !mustSend && event != nil {
 				// suppress_redundant - skips the telemetry update if no changes
-				if event.updatedList.Size() > 0 ||
-					event.deletedList.Size() > 0 {
+				if event.updated.Size() > 0 ||
+					event.deleted.Size() > 0 {
 					mustSend = true
 				}
 			}
@@ -409,15 +415,15 @@ func (subscriber *Subscriber) run() {
 	}
 }
 
-func getDeletes(path string, deleteOnly bool, event *ChangeEvent) ([]*gnmipb.Path, error) {
+func getDeletes(path string, deleteOnly bool, event *changeEvent) ([]*gnmipb.Path, error) {
 	if event == nil {
 		return nil, nil
 	}
-	deletes := make([]*gnmipb.Path, 0, event.deletedList.Size())
-	dpaths := event.deletedList.FindByPrefix(path)
+	deletes := make([]*gnmipb.Path, 0, event.deleted.Size())
+	dpaths := event.deleted.FindByPrefix(path)
 	for _, dpath := range dpaths {
 		if deleteOnly {
-			if _, ok := event.updatedList.Find(dpath); ok {
+			if _, ok := event.updated.Find(dpath); ok {
 				continue
 			}
 		}
@@ -433,7 +439,7 @@ func getDeletes(path string, deleteOnly bool, event *ChangeEvent) ([]*gnmipb.Pat
 }
 
 // getUpdates() returns updates with duplicates.
-func getUpdates(branch, data yangtree.DataNode, encoding gnmipb.Encoding, event *ChangeEvent) (*gnmipb.Update, error) {
+func getUpdates(branch, data yangtree.DataNode, encoding gnmipb.Encoding, event *changeEvent) (*gnmipb.Update, error) {
 	// FIXME - need to check an empty notification is valid.
 	// if ydb.IsEmptyInterface(data.Value) {
 	// 	return nil, nil
@@ -454,7 +460,7 @@ func getUpdates(branch, data yangtree.DataNode, encoding gnmipb.Encoding, event 
 	}
 	var duplicates uint32
 	if event != nil {
-		for _, v := range event.updatedList.FindByPrefixValue(path) {
+		for _, v := range event.updated.FindByPrefixValue(path) {
 			duplicates += v.(uint32)
 		}
 	}
@@ -484,7 +490,7 @@ func (subses *SubSession) serverAliasesUpdate() {
 // initTelemetryUpdate - Process and generate responses for a init update.
 func (subses *SubSession) initTelemetryUpdate(
 	prefix *gnmipb.Path, paths []*gnmipb.Path,
-	updatesOnly bool, encoding gnmipb.Encoding, event *ChangeEvent) error {
+	updatesOnly bool, encoding gnmipb.Encoding, event *changeEvent) error {
 
 	if updatesOnly {
 		return subses.respchan.Send(buildSyncResponse())
@@ -546,7 +552,7 @@ func (subses *SubSession) initTelemetryUpdate(
 }
 
 // telemetryUpdate - Process and generate responses for a telemetry update.
-func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *ChangeEvent) error {
+func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) error {
 	prefix := sub.Prefix
 	encoding := sub.Encoding
 	mode := sub.Mode
@@ -700,10 +706,10 @@ func (subses *SubSession) addSubscription(name string,
 		SuppressRedundant: SuppressRedundant,
 		HeartbeatInterval: HeartbeatInterval,
 
-		event:   make(chan *ChangeEvent, 16),
-		mutex:   &sync.Mutex{},
-		session: subses,
-		key:     key,
+		onchange: make(chan *changeEvent, 16),
+		mutex:    &sync.Mutex{},
+		session:  subses,
+		key:      key,
 	}
 	subses.Sub[key] = subscriber
 
@@ -778,8 +784,8 @@ func (subses *SubSession) deleteSubscription(subscriber *Subscriber) {
 		subscriber.Paths[i] = nil
 	}
 	subscriber.Paths = nil
-	close(subscriber.event)
-	subscriber.event = nil
+	close(subscriber.onchange)
+	subscriber.onchange = nil
 	subscriber.session = nil
 	subscriber.mutex = nil
 	if glog.V(11) {

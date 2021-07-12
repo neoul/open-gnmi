@@ -77,11 +77,11 @@ type syncEvent struct {
 
 func (e *syncEvent) String() string { return "sync." + e.regPath }
 
-// IsEventReceiver is the EventReceiver interface for sync
-func (e *syncEvent) IsEventReceiver() {}
-
 // EventComplete is the EventReceiver interface for sync
 func (e *syncEvent) EventComplete(eid uint) {}
+
+// EventStart is the EventReceiver interface for sync
+func (e *syncEvent) EventStart(uint) {}
 
 // EventReceive is the EventReceiver interface for sync
 func (e *syncEvent) EventReceive(eid uint, event EventType, path string) {

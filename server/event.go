@@ -34,7 +34,7 @@ func (x EventType) String() string {
 
 // Event Control Block
 type EventReceiver interface {
-	IsEventReceiver()
+	EventStart(uint)
 	EventReceive(uint, EventType, string)
 	EventComplete(uint)
 	EventPath() []string
@@ -96,64 +96,6 @@ func (ec *EventCtrl) Unregister(eReceiver EventReceiver) {
 	delete(ec.Ready, eReceiver)
 }
 
-// setReady() sets gnmi event.
-func (ec *EventCtrl) setReady(event EventType, node []yangtree.DataNode) error {
-	for i := range node {
-		if glog.V(11) {
-			glog.Infof("event: on-change in %q", node[i].Path())
-		}
-		if !yangtree.IsValid(node[i]) {
-			return fmt.Errorf("invalid node inserted for gnmi update event")
-		}
-		for _, group := range ec.Receivers.FindAll(node[i].Path()) {
-			egroup := group.(EventRecvGroup)
-			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = struct{}{}
-				eReceiver.EventReceive(ec.eid, event, node[i].Path())
-			}
-		}
-		schema := node[i].Schema()
-		if yangtree.HasUniqueListParent(schema) {
-			schemapath := yangtree.GeneratePath(schema, false, false)
-			for _, group := range ec.Receivers.FindAll(schemapath) {
-				egroup := group.(EventRecvGroup)
-				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = struct{}{}
-					eReceiver.EventReceive(ec.eid, event, node[i].Path())
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// setReady() sets gnmi event.
-func (ec *EventCtrl) setReadyByPath(event EventType, path []string) error {
-	for i := range path {
-		if glog.V(11) {
-			glog.Infof("event: on-change in %q", path[i])
-		}
-		for _, group := range ec.Receivers.FindAll(path[i]) {
-			egroup := group.(EventRecvGroup)
-			for eReceiver := range egroup {
-				ec.Ready[eReceiver] = struct{}{}
-				eReceiver.EventReceive(ec.eid, event, path[i])
-			}
-		}
-		schemapath, ok := yangtree.RemovePredicates(&(path[i]))
-		if ok {
-			for _, group := range ec.Receivers.FindAll(schemapath) {
-				egroup := group.(EventRecvGroup)
-				for eReceiver := range egroup {
-					ec.Ready[eReceiver] = struct{}{}
-					eReceiver.EventReceive(ec.eid, event, path[i])
-				}
-			}
-		}
-	}
-	return nil
-}
-
 // SetEvent() sets gnmi event.
 func (ec *EventCtrl) SetEvent(c, r, d []yangtree.DataNode) error {
 	ec.mutex.Lock()
@@ -194,6 +136,76 @@ func (ec *EventCtrl) SetEventByPath(c, r, d []string) error {
 	for eReceiver := range ec.Ready {
 		eReceiver.EventComplete(ec.eid)
 		delete(ec.Ready, eReceiver)
+	}
+	return nil
+}
+
+// setReady() sets gnmi event.
+func (ec *EventCtrl) setReady(event EventType, node []yangtree.DataNode) error {
+	for i := range node {
+		if glog.V(11) {
+			glog.Infof("event: on-change in %q", node[i].Path())
+		}
+		if !yangtree.IsValid(node[i]) {
+			return fmt.Errorf("invalid node inserted for gnmi update event")
+		}
+		for _, group := range ec.Receivers.FindAll(node[i].Path()) {
+			egroup := group.(EventRecvGroup)
+			for eReceiver := range egroup {
+				if _, ok := ec.Ready[eReceiver]; !ok {
+					ec.Ready[eReceiver] = struct{}{}
+					eReceiver.EventStart(ec.eid)
+				}
+				eReceiver.EventReceive(ec.eid, event, node[i].Path())
+			}
+		}
+		schema := node[i].Schema()
+		if yangtree.HasUniqueListParent(schema) {
+			schemapath := yangtree.GeneratePath(schema, false, false)
+			for _, group := range ec.Receivers.FindAll(schemapath) {
+				egroup := group.(EventRecvGroup)
+				for eReceiver := range egroup {
+					if _, ok := ec.Ready[eReceiver]; !ok {
+						ec.Ready[eReceiver] = struct{}{}
+						eReceiver.EventStart(ec.eid)
+					}
+					eReceiver.EventReceive(ec.eid, event, node[i].Path())
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// setReady() sets gnmi event.
+func (ec *EventCtrl) setReadyByPath(event EventType, path []string) error {
+	for i := range path {
+		if glog.V(11) {
+			glog.Infof("event: on-change in %q", path[i])
+		}
+		for _, group := range ec.Receivers.FindAll(path[i]) {
+			egroup := group.(EventRecvGroup)
+			for eReceiver := range egroup {
+				if _, ok := ec.Ready[eReceiver]; !ok {
+					ec.Ready[eReceiver] = struct{}{}
+					eReceiver.EventStart(ec.eid)
+				}
+				eReceiver.EventReceive(ec.eid, event, path[i])
+			}
+		}
+		schemapath, ok := yangtree.RemovePredicates(&(path[i]))
+		if ok {
+			for _, group := range ec.Receivers.FindAll(schemapath) {
+				egroup := group.(EventRecvGroup)
+				for eReceiver := range egroup {
+					if _, ok := ec.Ready[eReceiver]; !ok {
+						ec.Ready[eReceiver] = struct{}{}
+						eReceiver.EventStart(ec.eid)
+					}
+					eReceiver.EventReceive(ec.eid, event, path[i])
+				}
+			}
+		}
 	}
 	return nil
 }
