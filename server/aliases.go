@@ -15,28 +15,28 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-type AliasEntry struct {
+type aliasEntry struct {
 	Name     string       // alias name
 	Path     string       // string path
 	GNMIPath *gnmipb.Path // gnmi path
 	IsServer bool         // true if target-defined aliases
 }
 
-func (entry *AliasEntry) MarshalJSON() ([]byte, error) {
+func (entry *aliasEntry) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"name": %q, "path": %q, "gpath": %q, "is-server": %v}`, entry.Name, entry.Path, entry.GNMIPath, entry.IsServer)), nil
 }
 
 // Client Aliases structure provides the conversion of the gnmi aliases
-type ClientAliases struct {
-	Alias2Path       map[string]*AliasEntry `json:"alias-to-path,omitempty"`
-	Path2Alias       map[string]*AliasEntry `json:"path-to-alias,omitempty"`
+type clientAliases struct {
+	Alias2Path       map[string]*aliasEntry `json:"alias-to-path,omitempty"`
+	Path2Alias       map[string]*aliasEntry `json:"path-to-alias,omitempty"`
 	UseServerAliases bool                   `json:"use-server-aliases,omitempty"`
 
 	schema *yang.Entry
 	mutex  *sync.RWMutex
 }
 
-func (caliases *ClientAliases) String() string {
+func (caliases *clientAliases) String() string {
 	jbytes, err := json.Marshal(caliases)
 	if err != nil {
 		return err.Error()
@@ -44,18 +44,21 @@ func (caliases *ClientAliases) String() string {
 	return string(jbytes)
 }
 
-// ClientAliases is initialized with server aliases (target-defined aliases)
-func newClientAliases(schema *yang.Entry) *ClientAliases {
-	caliases := &ClientAliases{
-		Alias2Path: make(map[string]*AliasEntry),
-		Path2Alias: make(map[string]*AliasEntry),
+// clientAliases is initialized with server aliases (target-defined aliases)
+func newClientAliases(schema *yang.Entry) *clientAliases {
+	if schema == nil {
+		return nil
+	}
+	caliases := &clientAliases{
+		Alias2Path: make(map[string]*aliasEntry),
+		Path2Alias: make(map[string]*aliasEntry),
 		schema:     schema,
 		mutex:      &sync.RWMutex{},
 	}
 	return caliases
 }
 
-func clearClientAliases(caliases *ClientAliases) {
+func clearClientAliases(caliases *clientAliases) {
 	mutex := caliases.mutex
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -71,7 +74,7 @@ func clearClientAliases(caliases *ClientAliases) {
 }
 
 // update updates or deletes the server aliases and returns the updated aliases.
-func (caliases *ClientAliases) updateServerAliases(serverAliases map[string]string, add bool) []string {
+func (caliases *clientAliases) updateServerAliases(serverAliases map[string]string, add bool) []string {
 	if caliases == nil {
 		return nil
 	}
@@ -80,15 +83,21 @@ func (caliases *ClientAliases) updateServerAliases(serverAliases map[string]stri
 	aliaslist := make([]string, 0, len(serverAliases))
 	for name, path := range serverAliases {
 		if !strings.HasPrefix(name, "#") {
+			if glog.V(11) {
+				glog.Errorf("invalid server alias %q found", name)
+			}
 			continue
 		}
 		gpath, err := gyangtree.ToGNMIPath(path)
 		if err != nil {
+			if glog.V(11) {
+				glog.Errorf("invalid server alias path: %v", err)
+			}
 			continue
 		}
 		if add {
 			if _, ok := caliases.Alias2Path[name]; !ok {
-				ca := &AliasEntry{
+				ca := &aliasEntry{
 					Name:     name,
 					Path:     path,
 					GNMIPath: gpath,
@@ -110,8 +119,8 @@ func (caliases *ClientAliases) updateServerAliases(serverAliases map[string]stri
 	return aliaslist
 }
 
-// Set sets the client alias to the ClientAliases structure.
-func (caliases *ClientAliases) updateClientAlias(alias *gnmipb.Alias) error {
+// Set sets the client alias to the clientAliases structure.
+func (caliases *clientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 	if caliases == nil {
 		return status.TaggedErrorf(codes.Internal, status.TagOperationFail, "nil client-aliases")
 	}
@@ -119,10 +128,12 @@ func (caliases *ClientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 	defer caliases.mutex.Unlock()
 	name := alias.GetAlias()
 	if name == "" {
-		return status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidAlias, "empty alias")
+		return status.TaggedErrorf(codes.InvalidArgument,
+			status.TagInvalidAlias, "empty alias")
 	}
 	if !strings.HasPrefix(name, "#") {
-		return status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidAlias, "alias must start with '#'. e.g. %s", name)
+		return status.TaggedErrorf(codes.InvalidArgument,
+			status.TagInvalidAlias, "alias must start with '#'. e.g. %s", name)
 	}
 	gpath := alias.GetPath()
 	if gpath == nil || len(gpath.GetElem()) == 0 {
@@ -134,10 +145,16 @@ func (caliases *ClientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 		return nil
 	}
 
-	path := gyangtree.ToPath(true, gpath)
+	path, err := gyangtree.ToExactPath(caliases.schema, gpath.Elem)
+	if err != nil {
+		return status.TaggedErrorf(codes.InvalidArgument,
+			status.TagInvalidAlias, "invalid alias path: %v", err)
+	}
+
 	if caliases.schema != nil {
 		if err := gyangtree.ValidateGNMIPath(caliases.schema, gpath); err != nil {
-			return status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidAlias, "invalid path '%s'", path)
+			return status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidAlias,
+				"invalid path '%s'", path)
 		}
 	}
 	if ca, ok := caliases.Path2Alias[path]; ok {
@@ -149,7 +166,7 @@ func (caliases *ClientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 			"'%s' is already defined for '%s'", name, ca.Path)
 	}
 	// add the alias
-	ca := &AliasEntry{
+	ca := &aliasEntry{
 		Name:     name,
 		Path:     path,
 		GNMIPath: gpath,
@@ -159,7 +176,7 @@ func (caliases *ClientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 	return nil
 }
 
-func (caliases *ClientAliases) updateClientAliases(aliases []*gnmipb.Alias) ([]string, error) {
+func (caliases *clientAliases) updateClientAliases(aliases []*gnmipb.Alias) ([]string, error) {
 	if caliases == nil {
 		return nil, status.TaggedErrorf(codes.Internal, status.TagOperationFail, "nil client-aliases")
 	}
@@ -181,7 +198,7 @@ func (caliases *ClientAliases) updateClientAliases(aliases []*gnmipb.Alias) ([]s
 // If the input alias is a gnmipb.Path, it will return the same type path.
 // if diffFormat is configured, it will return the different type.
 //  [gNMI path --> string path, string path --> gNMI path]
-func (caliases *ClientAliases) ToPath(alias interface{}, diffFormat bool) interface{} {
+func (caliases *clientAliases) ToPath(alias interface{}, diffFormat bool) interface{} {
 	if caliases == nil {
 		return alias
 	}
@@ -206,7 +223,8 @@ func (caliases *ClientAliases) ToPath(alias interface{}, diffFormat bool) interf
 			}
 		}
 		if diffFormat {
-			return gyangtree.ToPath(true, a)
+			path, _ := gyangtree.ToExactPath(caliases.schema, a.Elem)
+			return path
 		}
 		return a
 	case string:
@@ -223,14 +241,12 @@ func (caliases *ClientAliases) ToPath(alias interface{}, diffFormat bool) interf
 		return a
 	}
 	// must not reach here!!!
-	if glog.V(11) {
-		glog.Fatalf("unknown type inserted to ClientAliases.ToPath()")
-	}
+	glog.Fatalf("unknown type inserted to clientAliases.ToPath()")
 	return alias
 }
 
 // ToAlias converts a path to the related alias.
-func (caliases *ClientAliases) ToAlias(path interface{}, diffFormat bool) interface{} {
+func (caliases *clientAliases) ToAlias(path interface{}, diffFormat bool) interface{} {
 	if caliases == nil {
 		return path
 	}
@@ -238,7 +254,7 @@ func (caliases *ClientAliases) ToAlias(path interface{}, diffFormat bool) interf
 	defer caliases.mutex.RUnlock()
 	switch _path := path.(type) {
 	case *gnmipb.Path:
-		p := gyangtree.ToPath(true, _path)
+		p, _ := gyangtree.ToExactPath(caliases.schema, _path.Elem)
 		if ca, ok := caliases.Path2Alias[p]; ok {
 			if diffFormat {
 				return ca.Name
@@ -264,9 +280,7 @@ func (caliases *ClientAliases) ToAlias(path interface{}, diffFormat bool) interf
 	default:
 	}
 	// must not reach here!!!
-	if glog.V(11) {
-		glog.Fatalf("unknown type inserted to ClientAliases.ToAlias()")
-	}
+	glog.Fatalf("unknown type inserted to clientAliases.ToAlias()")
 	return path
 }
 

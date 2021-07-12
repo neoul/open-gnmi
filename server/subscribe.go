@@ -66,7 +66,7 @@ type SubSession struct {
 	respchan  subscribeResponseChannel
 	shutdown  chan struct{}
 	waitgroup *sync.WaitGroup
-	caliases  *ClientAliases
+	caliases  *clientAliases
 	*Server
 }
 

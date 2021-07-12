@@ -4,20 +4,25 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/neoul/yangtree"
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 func Test_clientAliases(t *testing.T) {
 	serveraliases := map[string]string{
-		"#1/1":     "/interfaces/interface[name=1/1]",
-		"#1/2":     "/interfaces/interface[name=1/2]",
-		"#1/3":     "/interfaces/interface[name=1/3]",
-		"#1/4":     "/interfaces/interface[name=1/4]",
-		"#1/5":     "/interfaces/interface[name=1/5]",
-		"#ifstate": "/interfaces/interface/state",
-		"#log":     "/messages/state/msg",
+		"#1/1":        "/interfaces/interface[name=1/1]",
+		"#1/2":        "/interfaces/interface[name=1/2]",
+		"#1/3":        "/interfaces/interface[name=1/3]",
+		"#1/4":        "/interfaces/interface[name=1/4]",
+		"#1/5":        "/interfaces/interface[name=1/5]",
+		"#eth0-stats": "/interfaces/interface[name=eth0]/state",
+		"#log":        "/messages/state/msg",
 	}
-	caliases := newClientAliases(nil)
+	schema, err := yangtree.Load(testModels())
+	if err != nil {
+		t.Fatalf("loading schema failed: %v", err)
+	}
+	caliases := newClientAliases(schema)
 
 	// enable server aliases
 	caliases.updateServerAliases(serveraliases, true)
@@ -87,7 +92,7 @@ func Test_clientAliases(t *testing.T) {
 	for _, tt := range settests {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := caliases.updateClientAlias(tt.alias); err != nil && !tt.wantErr {
-				t.Errorf("ClientAliases.Set() = %v", err)
+				t.Errorf("clientAliases.Set() = %v", err)
 			}
 		})
 	}
@@ -113,7 +118,7 @@ func Test_clientAliases(t *testing.T) {
 		{
 			name: "ToPath (string path --> gnmi path)",
 			args: args{
-				input:      "#ifstate",
+				input:      "#eth0-stats",
 				diffFormat: true,
 			},
 			want: &gnmipb.Path{
@@ -123,6 +128,9 @@ func Test_clientAliases(t *testing.T) {
 					},
 					&gnmipb.PathElem{
 						Name: "interface",
+						Key: map[string]string{
+							"name": "eth0",
+						},
 					},
 					&gnmipb.PathElem{
 						Name: "state",
@@ -162,7 +170,7 @@ func Test_clientAliases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := caliases.ToPath(tt.args.input, tt.args.diffFormat); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ClientAliases.ToPath() = %v, want %v", got, tt.want)
+				t.Errorf("clientAliases.ToPath() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -201,6 +209,9 @@ func Test_clientAliases(t *testing.T) {
 						},
 						&gnmipb.PathElem{
 							Name: "interface",
+							Key: map[string]string{
+								"name": "eth0",
+							},
 						},
 						&gnmipb.PathElem{
 							Name: "state",
@@ -209,7 +220,7 @@ func Test_clientAliases(t *testing.T) {
 				},
 				diffFormat: false,
 			},
-			want: newGNMIAliasPath("#ifstate", "", ""),
+			want: newGNMIAliasPath("#eth0-stats", "", ""),
 		},
 		{
 			name: "ToAlias",
@@ -221,6 +232,9 @@ func Test_clientAliases(t *testing.T) {
 						},
 						&gnmipb.PathElem{
 							Name: "interface",
+							Key: map[string]string{
+								"name": "eth0",
+							},
 						},
 						&gnmipb.PathElem{
 							Name: "state",
@@ -229,13 +243,13 @@ func Test_clientAliases(t *testing.T) {
 				},
 				diffFormat: true,
 			},
-			want: "#ifstate",
+			want: "#eth0-stats",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := caliases.ToAlias(tt.args.input, tt.args.diffFormat); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ClientAliases.ToAlias() = %v, want %v", got, tt.want)
+				t.Errorf("clientAliases.ToAlias() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -271,6 +285,9 @@ func Test_clientAliases(t *testing.T) {
 						},
 						&gnmipb.PathElem{
 							Name: "interface",
+							Key: map[string]string{
+								"name": "eth0",
+							},
 						},
 						&gnmipb.PathElem{
 							Name: "state",
@@ -279,7 +296,7 @@ func Test_clientAliases(t *testing.T) {
 				},
 				diffFormat: true,
 			},
-			want: "/interfaces/interface/state",
+			want: "/interfaces/interface[name=eth0]/state",
 		},
 		{
 			name: "ToAlias",
@@ -299,7 +316,7 @@ func Test_clientAliases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := caliases.ToAlias(tt.args.input, tt.args.diffFormat); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ClientAliases.ToAlias() = %v, want %v", got, tt.want)
+				t.Errorf("clientAliases.ToAlias() = %v, want %v", got, tt.want)
 			}
 		})
 	}
