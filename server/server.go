@@ -90,7 +90,7 @@ type Option interface {
 	IsOption()
 }
 
-// Aliases (Target-defined aliases configuration within a Subscription)
+// Aliases (Target-defined aliases; server aliases) configuration
 type Aliases map[string]string
 
 // IsOption - Aliases is a Option.
@@ -105,7 +105,7 @@ func hasAliases(opts []Option) map[string]string {
 					glog.Infof("server-aliases(%s: %s)\n", k, v)
 				}
 			}
-			return map[string]string(a)
+			return (map[string]string)(a)
 		}
 	}
 	return nil
@@ -141,7 +141,7 @@ func hasMaxSubSession(opts []Option) int {
 // 	 "../../../openconfig/public/release/models/openflow/openconfig-openflow.yang",
 // 	 "../../../openconfig/public/release/models/platform/openconfig-platform.yang",
 // 	 "../../../openconfig/public/release/models/system/openconfig-system.yang",
-// 	 "../../../neoul/yangtree/data/sample/sample.yang",
+//   "../yang/openconfig-telemetry-dev.yang",
 //  }
 //
 //  // Directories of YANG files to be imported or includeded
