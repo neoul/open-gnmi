@@ -2,13 +2,15 @@
 
 open-source gnmi (gRPC Network Management Interface)
 
-This is renewal of gnxi.
+## Path Aliases
 
-## Aliases
-
-open-gnmi only provides Path Aliases for data paths.
+`open-gnmi` provides the Path Aliases for data paths. 
 If an alias is defined as a schema path or with wildcards (*, ...), multiple data instances can be selected for the single alias.
 The data returned in a SubscribeResponse message would become ambiguous because we cannot specify where the data comes from.
+
+## Path Prefix
+
+`open-gnmi` provides the Path Prefix that can be specified to Get, Set and Subscribe RPCs. In the case that a prefix is specified, the absolute path is comprised of the concatenation of the list of path elements representing the prefix and the list of path elements in the path field.
 
 ## TODO
 

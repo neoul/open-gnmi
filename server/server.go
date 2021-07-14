@@ -436,10 +436,6 @@ func (s *Server) capabilities(ctx context.Context, req *gnmipb.CapabilityRequest
 func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetResponse, error) {
 	// A notification {prefix, update[]} per requested path
 	// GetResponse must have N notifications for N requested path.
-	if req.GetType() != gnmipb.GetRequest_ALL {
-		return nil, status.TaggedErrorf(codes.Unimplemented, status.TagNotSupport,
-			"unsupported request type: %s", gnmipb.GetRequest_DataType_name[int32(gnmipb.GetRequest_ALL)])
-	}
 	if err := s.CheckModels(req.GetUseModels()); err != nil {
 		return nil, err
 	}
@@ -447,50 +443,60 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 		return nil, err
 	}
 
-	prefix, paths := req.GetPrefix(), req.GetPath()
-	if len(paths) == 0 {
+	gprefix, gpath := req.GetPrefix(), req.GetPath()
+	if len(gpath) == 0 {
 		return nil, status.TaggedErrorf(codes.InvalidArgument,
 			status.TagMissingPath, "no path requested")
 	}
 
-	s.syncRequest(prefix, paths)
+	s.syncRequest(gprefix, gpath)
 
 	s.RLock()
 	defer s.RUnlock()
 
-	// each prefix + path ==> one notification message
-	if err := gyangtree.ValidateGNMIPath(s.RootSchema, prefix); err != nil {
-		return nil, status.TaggedError(codes.InvalidArgument, status.TagInvalidPath, err)
+	var findopt []yangtree.Option
+	sprefix, err := gyangtree.ValidateGNMIPrefixPath(s.RootSchema, gprefix)
+	if err != nil {
+		return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
+			"invalid prefix: %v", err)
 	}
-	var rerr error
-	branches, err := gyangtree.Find(s.Root, prefix)
-	// Get RPC will be failed if no data exists.
-	if err != nil || len(branches) <= 0 {
+	switch req.GetType() {
+	case gnmipb.GetRequest_CONFIG:
+		findopt = append(findopt, yangtree.ConfigOnly{})
+	case gnmipb.GetRequest_OPERATIONAL:
+		return nil, status.TaggedErrorf(codes.Unimplemented, status.TagNotSupport,
+			"unsupported request type: %s", gnmipb.GetRequest_DataType_name[int32(gnmipb.GetRequest_ALL)])
+	case gnmipb.GetRequest_STATE:
+		findopt = append(findopt, yangtree.StateOnly{})
+	}
+	branches, err := yangtree.Find(s.Root, sprefix, findopt...)
+
+	if err != nil { // finding error
+		return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
+			"error in finding: %v", err)
+	}
+	if len(branches) <= 0 { // get failed if no data exists.
 		return nil, status.TaggedErrorf(codes.NotFound, status.TagDataMissing,
-			"data not found from %v", gyangtree.ToPath(true, prefix))
+			"data not found from %v", sprefix)
 	}
 
-	notifications := make([]*gnmipb.Notification, 0, len(branches)*len(paths))
+	var rerr error
+	notifications := make([]*gnmipb.Notification, 0, len(branches)*len(gpath))
 	for _, branch := range branches {
-		bpath := branch.Path()
-		bprefix, err := gyangtree.ToGNMIPath(bpath)
-		if err != nil {
-			return nil, status.TaggedErrorf(codes.Internal, status.TagInvalidPath,
-				"path converting error for %s", bpath)
-		}
-		for _, path := range paths {
+		for _, path := range gpath {
 			if err := gyangtree.ValidateGNMIPath(branch.Schema(), path); err != nil {
 				return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
-					"invalid path: %s", err)
+					"invalid path: %v", err)
 			}
-			datalist, err := gyangtree.Find(branch, path)
-			if err != nil || len(datalist) <= 0 {
+			node, err := gyangtree.Find(branch, path, findopt...)
+			if err != nil || len(node) <= 0 {
 				rerr = status.TaggedErrorf(codes.NotFound, status.TagDataMissing,
-					"data not found from %v", gyangtree.ToPath(true, prefix, path))
+					"data not found from %v", sprefix)
 				continue
 			}
-			update := make([]*gnmipb.Update, 0, len(datalist))
-			for _, data := range datalist {
+
+			update := make([]*gnmipb.Update, 0, len(node))
+			for _, data := range node {
 				typedValue, err := gyangtree.DataNodeToTypedValue(data, req.GetEncoding())
 				if err != nil {
 					return nil, status.TaggedErrorf(codes.Internal, status.TagBadData,
@@ -501,29 +507,22 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 					return nil, status.TaggedErrorf(codes.Internal, status.TagInvalidPath,
 						"path converting error for %s", data.Path())
 				}
-				gyangtree.UpdateGNMIPath(datapath, path)
 				update = append(update, &gnmipb.Update{Path: datapath, Val: typedValue})
 			}
-			if len(update) == 0 {
-				rerr = status.TaggedErrorf(codes.NotFound, status.TagDataMissing,
-					"data not found from %v", gyangtree.ToPath(true, prefix, path))
-				continue
-			}
-			gyangtree.UpdateGNMIPath(bprefix, prefix)
 			notification := &gnmipb.Notification{
 				Timestamp: time.Now().UnixNano(),
-				Prefix:    bprefix,
+				Prefix:    gprefix,
 				Update:    update,
 			}
 			notifications = append(notifications, notification)
 		}
 	}
-	// Get RPC will be failed if no data exists.
+	// get failed if no data exists.
 	if len(notifications) == 0 {
 		if rerr != nil {
 			return nil, rerr
 		}
-		return nil, status.TaggedErrorf(codes.NotFound, status.TagDataMissing, "data not found for required paths")
+		return nil, status.TaggedErrorf(codes.NotFound, status.TagDataMissing, "data not found for the requested paths")
 	}
 	return &gnmipb.GetResponse{Notification: notifications}, nil
 }
