@@ -145,7 +145,12 @@ func (caliases *clientAliases) updateClientAlias(alias *gnmipb.Alias) error {
 		return nil
 	}
 
-	path, err := gyangtree.ToExactPath(caliases.schema, gpath.Elem)
+	if gyangtree.HasGNMIPathWildcards(gpath) {
+		return status.TaggedErrorf(codes.InvalidArgument,
+			status.TagInvalidAlias, "invalid alias path: wildcard not allowed for the alias")
+	}
+
+	path, err := gyangtree.ToValidDataPath(caliases.schema, gpath)
 	if err != nil {
 		return status.TaggedErrorf(codes.InvalidArgument,
 			status.TagInvalidAlias, "invalid alias path: %v", err)
@@ -223,7 +228,7 @@ func (caliases *clientAliases) ToPath(alias interface{}, diffFormat bool) interf
 			}
 		}
 		if diffFormat {
-			path, _ := gyangtree.ToExactPath(caliases.schema, a.Elem)
+			path, _ := gyangtree.ToValidDataPath(caliases.schema, a)
 			return path
 		}
 		return a
@@ -254,7 +259,7 @@ func (caliases *clientAliases) ToAlias(path interface{}, diffFormat bool) interf
 	defer caliases.mutex.RUnlock()
 	switch _path := path.(type) {
 	case *gnmipb.Path:
-		p, _ := gyangtree.ToExactPath(caliases.schema, _path.Elem)
+		p, _ := gyangtree.ToValidDataPath(caliases.schema, _path)
 		if ca, ok := caliases.Path2Alias[p]; ok {
 			if diffFormat {
 				return ca.Name
