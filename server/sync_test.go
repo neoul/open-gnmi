@@ -87,6 +87,7 @@ func TestSync(t *testing.T) {
 		t.Fatalf("error in loading state: %v", err)
 	}
 	c, _, _ := yangtree.Diff(nil, s.Root)
+	// set the load operation as an event to register sync data.
 	s.Event.SetEvent(c, nil, nil)
 	type args struct {
 		prefix *gnmipb.Path

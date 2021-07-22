@@ -286,9 +286,9 @@ func (s *Server) CheckModels(models []*gnmipb.ModelData) error {
 	return nil
 }
 
-// getGNMIServiceVersion returns a pointer to the gNMI service version string.
+// GetGNMIVersion returns a pointer to the gNMI service version string.
 // The method is non-trivial because of the way it is defined in the proto file.
-func getGNMIServiceVersion() (*string, error) {
+func GetGNMIVersion() (*string, error) {
 	gzB, _ := (&gnmipb.Update{}).Descriptor()
 	r, err := gzip.NewReader(bytes.NewReader(gzB))
 	if err != nil {
@@ -414,7 +414,7 @@ func (s *Server) Subscribe(stream gnmipb.GNMI_SubscribeServer) error {
 
 // Capabilities returns supported encodings and models.
 func (s *Server) capabilities(ctx context.Context, req *gnmipb.CapabilityRequest) (*gnmipb.CapabilityResponse, error) {
-	ver, err := getGNMIServiceVersion()
+	ver, err := GetGNMIVersion()
 	if err != nil {
 		return nil, status.TaggedErrorf(codes.Internal, status.TagOperationFail,
 			"gnmi service version error: %v", err)
@@ -444,22 +444,19 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 	}
 
 	gprefix, gpath := req.GetPrefix(), req.GetPath()
-	if len(gpath) == 0 {
-		return nil, status.TaggedErrorf(codes.InvalidArgument,
-			status.TagMissingPath, "no path requested")
+	sprefix, spath, err := gyangtree.ValidateAndConvertGNMIPath(s.RootSchema, gprefix, gpath)
+	if err != nil {
+		return nil, status.TaggedError(codes.InvalidArgument, status.TagInvalidPath, err)
 	}
-
-	s.syncRequest(gprefix, gpath)
+	// request data updates for the paths.
+	for i := range spath {
+		s.SyncRequest(yangtree.FindAllPossiblePath(s.RootSchema, sprefix+spath[i]))
+	}
 
 	s.RLock()
 	defer s.RUnlock()
 
 	var findopt []yangtree.Option
-	sprefix, err := gyangtree.ValidateGNMIPrefixPath(s.RootSchema, gprefix)
-	if err != nil {
-		return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
-			"invalid prefix: %v", err)
-	}
 	switch req.GetType() {
 	case gnmipb.GetRequest_CONFIG:
 		findopt = append(findopt, yangtree.ConfigOnly{})
@@ -469,8 +466,8 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 	case gnmipb.GetRequest_STATE:
 		findopt = append(findopt, yangtree.StateOnly{})
 	}
-	branches, err := yangtree.Find(s.Root, sprefix, findopt...)
 
+	branches, err := yangtree.Find(s.Root, sprefix, findopt...)
 	if err != nil { // finding error
 		return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
 			"error in finding: %v", err)
@@ -481,14 +478,10 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 	}
 
 	var rerr error
-	notifications := make([]*gnmipb.Notification, 0, len(branches)*len(gpath))
+	notifications := make([]*gnmipb.Notification, 0, len(branches)*len(spath))
 	for _, branch := range branches {
-		for _, path := range gpath {
-			if err := gyangtree.ValidateGNMIPath(branch.Schema(), path); err != nil {
-				return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
-					"invalid path: %v", err)
-			}
-			node, err := gyangtree.Find(branch, path, findopt...)
+		for i := range spath {
+			node, err := yangtree.Find(branch, spath[i], findopt...)
 			if err != nil || len(node) <= 0 {
 				rerr = status.TaggedErrorf(codes.NotFound, status.TagDataMissing,
 					"data not found from %v", sprefix)

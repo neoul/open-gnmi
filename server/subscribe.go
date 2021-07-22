@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -182,12 +181,12 @@ type Subscriber struct {
 	ID                ObjID
 	SessionID         ObjID
 	key               string
-	Prefix            *gnmipb.Path                 `json:"prefix,omitempty"`
 	UseAliases        bool                         `json:"use_aliases,omitempty"`
 	Mode              gnmipb.SubscriptionList_Mode `json:"stream_mode,omitempty"`
 	AllowAggregation  bool                         `json:"allow_aggregation,omitempty"`
 	Encoding          gnmipb.Encoding              `json:"encoding,omitempty"`
-	Paths             []*gnmipb.Path               `json:"path,omitempty"`              // The data tree path.
+	Prefix            string                       `json:"prefix,omitempty"`            // string prefix subscribed
+	Path              []string                     `json:"path,omitempty"`              // string path subscribed
 	StreamMode        gnmipb.SubscriptionMode      `json:"subscription_mode,omitempty"` // Subscription mode to be used.
 	SampleInterval    uint64                       `json:"sample_interval,omitempty"`   // ns between samples in SAMPLE mode.
 	SuppressRedundant bool                         `json:"suppress_redundant,omitempty"`
@@ -201,20 +200,13 @@ type Subscriber struct {
 	}
 
 	// internal data
+	fullpath []string
+	gprefix  *gnmipb.Path
 	session  *SubSession
 	onchange chan *changeEvent // event channel for on-change event
 	pending  *changeEvent      // event pending
 	started  bool
 	mutex    *sync.Mutex
-
-	// // https://github.com/openconfig/gnmi/issues/45 - QoSMarking issue
-	// Qos              *gnmipb.QOSMarking           `json:"qos,omitempty"`          // DSCP marking to be used.
-	// UseModels        []*gnmipb.ModelData          `json:"use_models,omitempty"`   // (Check validate only in Request)
-	// Alias            []*gnmipb.Alias              `json:"alias,omitempty"`
-	// UpdatesOnly       bool                     `json:"updates_only,omitempty"` // not required to store
-	// [FIXME]
-	// 1. Ticker (Timer)
-	// 2. keys (The path to the subscription data)
 }
 
 // EventReceiver interface for Telemetry subscription
@@ -284,13 +276,7 @@ func (subscriber *Subscriber) EventReceive(eid uint, event EventType, path strin
 
 // EventReceiver interface for Telemetry subscription
 func (subscriber *Subscriber) EventPath() []string {
-	var eventpath []string
-	rootschema := subscriber.session.RootSchema
-	for _, path := range subscriber.Paths {
-		fullpath := gyangtree.MergeGNMIPath(subscriber.Prefix, path)
-		eventpath = append(eventpath, gyangtree.FindPaths(rootschema, fullpath)...)
-	}
-	return eventpath
+	return subscriber.fullpath
 }
 
 func (subscriber *Subscriber) String() string {
@@ -376,7 +362,7 @@ func (subscriber *Subscriber) run() {
 					subses.Address, subses.Port, subses.ID, subscriber.ID)
 			}
 			subscriber.mutex.Lock()
-			subscriber.session.syncRequest(subscriber.Prefix, subscriber.Paths)
+			subscriber.session.SyncRequest(subscriber.fullpath)
 			subscriber.mutex.Unlock()
 			expired <- !subscriber.StreamConfig.SuppressRedundant
 		case <-heartbeatTimer.C:
@@ -489,40 +475,35 @@ func (subses *SubSession) serverAliasesUpdate() {
 
 // initTelemetryUpdate - Process and generate responses for a init update.
 func (subses *SubSession) initTelemetryUpdate(
-	prefix *gnmipb.Path, paths []*gnmipb.Path,
+	gprefix *gnmipb.Path, sprefix string, spath []string,
 	updatesOnly bool, encoding gnmipb.Encoding, event *changeEvent) error {
-
 	if updatesOnly {
 		return subses.respchan.Send(buildSyncResponse())
 	}
 
 	subses.RLock()
 	defer subses.RUnlock()
-	if err := gyangtree.ValidateGNMIPath(subses.RootSchema, prefix); err != nil {
-		return err
-	}
-	toplist, err := gyangtree.Find(subses.Root, prefix)
-	if err != nil || len(toplist) <= 0 {
+
+	branches, err := yangtree.Find(subses.Root, sprefix)
+	if err != nil || len(branches) <= 0 {
+		// [FIXME] send deletes regardless of the branch.
 		return subses.respchan.Send(buildSyncResponse())
 	}
 
-	for _, branch := range toplist {
+	for _, branch := range branches {
 		bpath := branch.Path()
 		deletes, err := getDeletes(bpath, false, event)
 		if err != nil {
 			return err
 		}
-		updates := make([]*gnmipb.Update, 0, len(paths))
-		for _, path := range paths {
-			if err := gyangtree.ValidateGNMIPath(branch.Schema(), path); err != nil {
-				return err
-			}
-			datalist, err := gyangtree.Find(branch, path)
-			if err != nil || len(datalist) <= 0 {
+		updates := make([]*gnmipb.Update, 0, len(spath))
+		for i := range spath {
+			nodes, err := yangtree.Find(branch, spath[i])
+			if err != nil || len(nodes) <= 0 {
 				continue
 			}
-			for _, data := range datalist {
-				u, err := getUpdates(branch, data, encoding, event)
+			for _, node := range nodes {
+				u, err := getUpdates(branch, node, encoding, event)
 				if err != nil {
 					return err
 				}
@@ -532,15 +513,7 @@ func (subses *SubSession) initTelemetryUpdate(
 			}
 		}
 		if len(updates) > 0 || len(deletes) > 0 {
-			bprefix, err := gyangtree.ToGNMIPath(bpath)
-			if err != nil {
-				return status.TaggedErrorf(codes.Internal, status.TagInvalidPath,
-					"path converting error for %s", bpath)
-			}
-			if prefix.GetTarget() != "" {
-				bprefix.Target = prefix.Target
-			}
-			prefixAlias := subses.caliases.ToAlias(bprefix, false).(*gnmipb.Path)
+			prefixAlias := subses.caliases.ToAlias(gprefix, false).(*gnmipb.Path)
 			err = subses.respchan.Send(
 				buildSubscribeResponse(prefixAlias, updates, deletes))
 			if err != nil {
@@ -558,7 +531,6 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 	mode := sub.Mode
 	streamMode := sub.StreamConfig.StreamMode
 	root := subses.Root
-	schema := subses.RootSchema
 	switch mode {
 	case gnmipb.SubscriptionList_STREAM:
 		root = subses.Root
@@ -572,17 +544,15 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 
 	subses.RLock()
 	defer subses.RUnlock()
-	if err := gyangtree.ValidateGNMIPath(schema, prefix); err != nil {
-		return err
-	}
-	toplist, err := gyangtree.Find(root, prefix)
-	if err != nil || len(toplist) <= 0 {
+	branches, err := yangtree.Find(root, prefix)
+	if err != nil || len(branches) <= 0 {
+		// [FIXME] send deletes regardless of the branch.
 		// data-missing is not an error in SubscribeRPC
 		// does not send any of messages.
 		return nil
 	}
 
-	for _, branch := range toplist {
+	for _, branch := range branches {
 		var err error
 		var deletes []*gnmipb.Path
 		var updates []*gnmipb.Update
@@ -592,16 +562,13 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 		if err != nil {
 			return err
 		}
-		updates = make([]*gnmipb.Update, 0, len(sub.Paths))
-		for _, path := range sub.Paths {
-			if err := gyangtree.ValidateGNMIPath(branch.Schema(), path); err != nil {
-				return err
-			}
-			datalist, err := gyangtree.Find(branch, path)
-			if err != nil || len(datalist) <= 0 {
+		updates = make([]*gnmipb.Update, 0, len(sub.Path))
+		for i := range sub.Path {
+			nodes, err := yangtree.Find(branch, sub.Path[i])
+			if err != nil || len(nodes) <= 0 {
 				continue
 			}
-			for _, data := range datalist {
+			for _, data := range nodes {
 				u, err := getUpdates(branch, data, encoding, event)
 				if err != nil {
 					return err
@@ -612,15 +579,7 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 			}
 		}
 		if len(updates) > 0 || len(deletes) > 0 {
-			bprefix, err := gyangtree.ToGNMIPath(bpath)
-			if err != nil {
-				return status.TaggedErrorf(codes.Internal, status.TagInvalidPath,
-					"path converting error for %s", bpath)
-			}
-			if prefix.GetTarget() != "" {
-				bprefix.Target = prefix.Target
-			}
-			prefixAlias := subses.caliases.ToAlias(bprefix, false).(*gnmipb.Path)
+			prefixAlias := subses.caliases.ToAlias(sub.gprefix, false).(*gnmipb.Path)
 			err = subses.respchan.Send(
 				buildSubscribeResponse(prefixAlias, updates, deletes))
 			if err != nil {
@@ -637,9 +596,9 @@ const (
 )
 
 // addSubscription adds a stream subscription to the subscription session.
-func (subses *SubSession) addSubscription(name string,
-	prefix *gnmipb.Path, useAliases bool, Mode gnmipb.SubscriptionList_Mode, allowAggregation bool,
-	Encoding gnmipb.Encoding, Path *gnmipb.Path, StreamMode gnmipb.SubscriptionMode,
+func (subses *SubSession) addSubscription(name string, gprefix *gnmipb.Path, sprefix, spath string,
+	useAliases bool, Mode gnmipb.SubscriptionList_Mode, allowAggregation bool,
+	Encoding gnmipb.Encoding, StreamMode gnmipb.SubscriptionMode,
 	SampleInterval uint64, SuppressRedundant bool, HeartbeatInterval uint64) (*Subscriber, error) {
 	var key string
 	if glog.V(11) {
@@ -654,15 +613,13 @@ func (subses *SubSession) addSubscription(name string,
 			return nil, nil
 		case gnmipb.SubscriptionList_POLL:
 			key = fmt.Sprintf("%d-%s-%s-%s-%t-%t",
-				subses.ID, Mode, Encoding, gyangtree.ToPath(true, prefix),
-				useAliases, allowAggregation,
-			)
+				subses.ID, Mode, Encoding, sprefix,
+				useAliases, allowAggregation)
 		case gnmipb.SubscriptionList_STREAM:
 			key = fmt.Sprintf("%d-%s-%s-%s-%s-%d-%d-%t-%t-%t",
-				subses.ID, Mode, Encoding, StreamMode,
-				gyangtree.ToPath(true, prefix), SampleInterval, HeartbeatInterval,
-				useAliases, allowAggregation, SuppressRedundant,
-			)
+				subses.ID, Mode, Encoding, StreamMode, sprefix,
+				SampleInterval, HeartbeatInterval, useAliases,
+				allowAggregation, SuppressRedundant)
 		}
 	}
 
@@ -675,19 +632,19 @@ func (subses *SubSession) addSubscription(name string,
 		// only updates the new path if the sub exists.
 		subscriber.mutex.Lock()
 		defer subscriber.mutex.Unlock()
-		for i := range subscriber.Paths {
-			if reflect.DeepEqual(subscriber.Paths[i], Path) {
+		for i := range subscriber.Path {
+			if subscriber.Path[i] == spath {
 				if glog.V(11) {
 					glog.Infof("subscribe[%s:%d:%d].stream[%d]:: already added path: %s",
-						subses.Address, subses.Port, subses.ID, subscriber.ID, gyangtree.ToPath(true, Path))
+						subses.Address, subses.Port, subses.ID, subscriber.ID, spath)
 				}
 				return subscriber, nil
 			}
 		}
-		subscriber.Paths = append(subscriber.Paths, Path)
+		subscriber.Path = append(subscriber.Path, spath)
 		if glog.V(11) {
 			glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added path: %s",
-				subses.Address, subses.Port, subses.ID, subscriber.ID, gyangtree.ToPath(true, Path))
+				subses.Address, subses.Port, subses.ID, subscriber.ID, spath)
 		}
 		return subscriber, nil
 	}
@@ -695,8 +652,8 @@ func (subses *SubSession) addSubscription(name string,
 	subscriber := &Subscriber{
 		ID:                subID,
 		SessionID:         subses.ID,
-		Prefix:            prefix,
-		Paths:             []*gnmipb.Path{Path},
+		Prefix:            sprefix,
+		Path:              []string{spath},
 		UseAliases:        useAliases,
 		Mode:              Mode,
 		AllowAggregation:  allowAggregation,
@@ -706,20 +663,28 @@ func (subses *SubSession) addSubscription(name string,
 		SuppressRedundant: SuppressRedundant,
 		HeartbeatInterval: HeartbeatInterval,
 
+		gprefix:  gprefix,
 		onchange: make(chan *changeEvent, 16),
 		mutex:    &sync.Mutex{},
 		session:  subses,
 		key:      key,
 	}
-	subses.Sub[key] = subscriber
-
+	var fullpath string
+	if strings.HasPrefix(spath, "/") {
+		fullpath = sprefix + spath
+	} else {
+		fullpath = sprefix + "/" + spath
+	}
+	subscriber.fullpath = append(subscriber.fullpath,
+		yangtree.FindAllPossiblePath(subses.RootSchema, fullpath)...)
 	if Mode == gnmipb.SubscriptionList_POLL {
 		if glog.V(11) {
 			glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added subscription",
 				subses.Address, subses.Port, subses.ID, subscriber.ID)
 			glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added path: %s",
-				subses.Address, subses.Port, subses.ID, subscriber.ID, gyangtree.ToPath(true, Path))
+				subses.Address, subses.Port, subses.ID, subscriber.ID, spath)
 		}
+		subses.Sub[key] = subscriber
 		return subscriber, nil
 	}
 	// 3.5.1.5.2 STREAM Subscriptions Must be satisfied for telemetry update starting.
@@ -772,18 +737,15 @@ func (subses *SubSession) addSubscription(name string,
 		glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added subscription",
 			subses.Address, subses.Port, subses.ID, subscriber.ID)
 		glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added path: %s",
-			subses.Address, subses.Port, subses.ID, subscriber.ID, gyangtree.ToPath(true, Path))
+			subses.Address, subses.Port, subses.ID, subscriber.ID, spath)
 	}
+	subses.Sub[key] = subscriber
 	return subscriber, nil
 }
 
 // deleteSubscription deletes the stream subscription.
 func (subses *SubSession) deleteSubscription(subscriber *Subscriber) {
-	subscriber.Prefix = nil
-	for i := range subscriber.Paths {
-		subscriber.Paths[i] = nil
-	}
-	subscriber.Paths = nil
+	subscriber.Path = nil
 	close(subscriber.onchange)
 	subscriber.onchange = nil
 	subscriber.session = nil
@@ -796,16 +758,16 @@ func (subses *SubSession) deleteSubscription(subscriber *Subscriber) {
 
 func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) error {
 	// SubscribeRequest for poll Subscription indication
-	pollMode := req.GetPoll()
-	if pollMode != nil {
+	if pollMode := req.GetPoll(); pollMode != nil {
 		for _, subscriber := range subses.Sub {
 			if subscriber.Mode != gnmipb.SubscriptionList_POLL {
 				continue
 			}
-			subses.syncRequest(subscriber.Prefix, subscriber.Paths)
+			subses.SyncRequest(subscriber.fullpath)
 			eventPending := subscriber.pending
 			if err := subses.initTelemetryUpdate(
-				subscriber.Prefix, subscriber.Paths, false, subscriber.Encoding, eventPending); err != nil {
+				subscriber.gprefix, subscriber.Prefix, subscriber.Path,
+				false, subscriber.Encoding, eventPending); err != nil {
 				if glog.V(11) {
 					glog.Errorf("subses[%d].poll[%d] %v", subses.ID, subscriber.ID, err)
 				}
@@ -848,31 +810,35 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 		return err
 	}
 	mode := subscriptionList.GetMode()
-	prefix := subses.caliases.ToPath(subscriptionList.GetPrefix(), false).(*gnmipb.Path)
+	gprefix := subses.caliases.ToPath(subscriptionList.GetPrefix(), false).(*gnmipb.Path)
 	updatesOnly := subscriptionList.GetUpdatesOnly()
-	paths := make([]*gnmipb.Path, 0, len(subList))
+
+	gpath := make([]*gnmipb.Path, 0, len(subList))
 	for _, sub := range subList {
-		paths = append(paths, sub.Path)
+		gpath = append(gpath, sub.Path)
 	}
+	sprefix, spath, err :=
+		gyangtree.ValidateAndConvertGNMIPath(subses.RootSchema, gprefix, gpath)
+	if err != nil {
+		return status.TaggedError(codes.InvalidArgument, status.TagInvalidPath, err)
+	}
+
 	switch mode {
 	case gnmipb.SubscriptionList_ONCE:
-		subses.syncRequest(prefix, paths)
-		return subses.initTelemetryUpdate(prefix, paths, updatesOnly, encoding, nil)
+		subses.syncRequest(gprefix, gpath)
+		return subses.initTelemetryUpdate(gprefix, sprefix, spath, updatesOnly, encoding, nil)
 	case gnmipb.SubscriptionList_POLL, gnmipb.SubscriptionList_STREAM:
 		allowAggregation := subscriptionList.GetAllowAggregation()
 		startingList := make([]*Subscriber, 0, subListLength)
-		for _, updateEntry := range subList {
-			path := updateEntry.GetPath()
-			submod := updateEntry.GetMode()
-			SampleInterval := updateEntry.GetSampleInterval()
-			supressRedundant := updateEntry.GetSuppressRedundant()
-			heartBeatInterval := updateEntry.GetHeartbeatInterval()
-			if err := gyangtree.ValidateGNMIPath(subses.RootSchema, gyangtree.MergeGNMIPath(prefix, path)); err != nil {
-				return err
-			}
+		for i := range subList {
+			submod := subList[i].GetMode()
+			SampleInterval := subList[i].GetSampleInterval()
+			supressRedundant := subList[i].GetSuppressRedundant()
+			heartBeatInterval := subList[i].GetHeartbeatInterval()
 			subscriber, err := subses.addSubscription("",
-				prefix, useAliases, mode, allowAggregation,
-				encoding, path, submod, SampleInterval,
+				gprefix, sprefix, spath[i],
+				useAliases, mode, allowAggregation,
+				encoding, submod, SampleInterval,
 				supressRedundant, heartBeatInterval)
 			if err != nil {
 				return err
@@ -880,9 +846,9 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 			startingList = append(startingList, subscriber)
 		}
 		if mode == gnmipb.SubscriptionList_STREAM {
-			subses.syncRequest(prefix, paths)
+			subses.syncRequest(gprefix, gpath)
 			if err := subses.initTelemetryUpdate(
-				prefix, paths, updatesOnly, encoding, nil); err != nil {
+				gprefix, sprefix, spath, updatesOnly, encoding, nil); err != nil {
 				return err
 			}
 		}

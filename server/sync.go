@@ -238,3 +238,17 @@ func (s *Server) syncRequest(prefix *gnmipb.Path, paths []*gnmipb.Path) {
 		}
 	}
 }
+
+// SyncRequest requests the data sync to the system before read.
+// Do not use server.Lock() before it because it updates the server.Root.
+func (s *Server) SyncRequest(syncpath []string) {
+	if s.syncCallback == nil {
+		return
+	}
+	for i := range syncpath {
+		if glog.V(10) {
+			glog.Infof("sync: request %q", syncpath)
+		}
+		s.syncExec(s.syncPath.SearchAll(syncpath[i], gtrie.SearchAllRelativeKey))
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/neoul/yangtree"
-	gyangtree "github.com/neoul/yangtree/gnmi"
 	"github.com/openconfig/gnmi/proto/gnmi"
 )
 
@@ -76,8 +75,8 @@ func (s *Server) addDynamicSubscription(subscriber *Subscriber) error {
 	default:
 		return fmt.Errorf("invalid subscription mode")
 	}
-	for i := range subscriber.Paths {
-		p := gyangtree.ToPath(true, subscriber.Paths[i])
+	for i := range subscriber.Path {
+		p := subscriber.Prefix + subscriber.Path[i]
 		err = yangtree.Set(node, "sensor-paths/sensor-path[path="+p+"]/state/path", p)
 		if err != nil {
 			return err

@@ -1535,7 +1535,7 @@ func TestSubscribe(t *testing.T) {
 			waittime: time.Second * 1,
 		},
 		{
-			name:     "poll subscription",
+			name:     "poll-subscription",
 			msgfile:  "../data/subscribe-poll.prototxt",
 			waittime: time.Second * 1,
 		},
