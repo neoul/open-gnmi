@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/golang/protobuf/ptypes"
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -28,18 +26,9 @@ type grpcstatus interface {
 
 // Status for rich gNMI error description
 type Status struct {
-	Code           codes.Code
-	Message        string
-	Tag            ErrorTag
-	Reason         string // errdetails.ErrorInfo.Reason
-	Domain         string // errdetails.ErrorInfo.Domain for ip addr
-	Path           string // errdetails.ErrorInfo.Meta["Path"]
-	SubError       []string
-	badRequest     *errdetails.BadRequest          // codes.InvalidArgument and codes.OutOfRange
-	precondFailure *errdetails.PreconditionFailure // FailedPrecondition
-	resourceInfo   *errdetails.ResourceInfo        // NotFound, AlreadyExists
-	quotaFailure   *errdetails.QuotaFailure        // ResourceExhausted
-	errorInfo      *errdetails.ErrorInfo
+	Code    codes.Code
+	Message string
+	Tag     ErrorTag
 }
 
 func (s *Status) Error() string {
@@ -49,117 +38,10 @@ func (s *Status) Error() string {
 	return fmt.Sprintf("[%s] %s", s.Tag, s.Message)
 }
 
-// // NewInvalidArgument return an error object including a BadRequest
-// // NewInvalidArgument("invalid gnmi.set.update.value for 'path'", "gnmi.set.update.value", "value")
-// func NewInvalidArgument(msg, field, desc string) error {
-// 	s := New(codes.InvalidArgument, msg)
-// 	v := &errdetails.BadRequest_FieldViolation{
-// 		Field:       field,
-// 		Description: desc,
-// 	}
-// 	br := &errdetails.BadRequest{}
-// 	br.FieldViolations = append(br.FieldViolations, v)
-// 	s.badRequest = br
-// 	return s
-// }
-
-// // NewErrorInternal return an error object
-// func NewErrorInternal(msg string) error {
-// 	s := New(codes.Internal, msg)
-// 	return s
-// }
-
-// // NewErrorfInternal return an error object
-// func NewErrorfInternal(msg string, a ...interface{}) error {
-// 	s := Newf(codes.Internal, msg, a...)
-// 	return s
-// }
-
-// // ErrorInternal return an error object
-// func ErrorInternal(err error) error {
-// 	return Error(codes.Internal, err)
-// }
-
-// func (s *Status) Code() codes.Code {
-// 	if s == nil {
-// 		return codes.OK
-// 	}
-// 	return s.Code
-// }
-
-// func (s *Status) Message() string {
-// 	if s == nil {
-// 		return ""
-// 	}
-// 	return s.Message
-// }
-
-// func (s *Status) ErrorReason() string {
-// 	if s == nil {
-// 		return ""
-// 	}
-// 	return s.Reason
-// }
-
-// func (s *Status) ErrorPath() string {
-// 	if s == nil {
-// 		return ""
-// 	}
-// 	return s.Path
-// }
-
-// func (s *Status) SubErrors() []string {
-// 	if s == nil {
-// 		return nil
-// 	}
-// 	return s.SubError
-// }
-
-func (s *Status) String() string {
-	if s == nil {
-		return ""
-	}
-	// b, err := json.Marshal(s)
-	// if err != nil {
-	// 	return ""
-	// }
-	// rstr := string(b)
-	rstr := fmt.Sprintf(`
-	status:
-	 Code: %s
-	 Message: %s
-	 Reason: %s
-	 Domain: %s
-	 Path: %s
-	 SubError:
-	`, s.Code, s.Message, s.Reason, s.Domain, s.Path,
-	)
-	for i := range s.SubError {
-		rstr = fmt.Sprintf("%s  - %s\n", rstr, s.SubError[i])
-	}
-	return rstr
-}
-
 // GRPCStatus returns gRPC status
 func (s *Status) GRPCStatus() *status.Status {
 	msg := fmt.Sprintf("[%s] %s", s.Tag, s.Message)
 	ss := status.New(s.Code, msg)
-	if s.badRequest != nil {
-		ss.WithDetails(s.badRequest)
-	}
-	if s.Reason != "" || s.Domain != "" || s.Path != "" || s.SubError != nil {
-		m := map[string]string{
-			"Path": s.Path,
-		}
-		for i := range s.SubError {
-			m[fmt.Sprintf("error%d", i)] = s.SubError[i]
-		}
-		ss.WithDetails(&errdetails.ErrorInfo{
-			Reason:   s.Reason,
-			Domain:   s.Domain,
-			Metadata: m,
-		})
-	}
 	return ss
 }
 
@@ -202,20 +84,6 @@ func Error(c codes.Code, err error) error {
 	}
 	return s
 }
-
-// // Errorb returns new GStatus based on input errors.
-// func Errorb(err error, c codes.Code, format string, a ...interface{}) error {
-// 	inerr := FromError(err)
-// 	if inerr == nil {
-// 		return New(c, "", fmt.Sprintf(format, a...))
-// 	}
-// 	if inerr.Code == codes.Unknown || inerr.Code == codes.OK {
-// 		inerr.Code = c
-// 	}
-// 	inerr.SubError = append(inerr.SubError, inerr.Message)
-// 	inerr.Message = fmt.Sprintf(format, a...)
-// 	return inerr
-// }
 
 // Errorf returns Error(c, fmt.Sprintf(format, a...)).
 func Errorf(c codes.Code, format string, a ...interface{}) error {
@@ -275,7 +143,7 @@ func (t ErrorTag) String() string {
 	return "unknown-error"
 }
 
-// TaggedError returns a tagged error
+// TaggedError returns a tagged error (netconf basis)
 // Tag:
 //  - invalid-path
 //  - invalid-alias
@@ -299,6 +167,7 @@ func (t ErrorTag) String() string {
 //  - operation-failed
 //  - partial-operation
 //  - malformed-message
+
 func TaggedError(c codes.Code, tag ErrorTag, err error) error {
 	s := FromError(err)
 	if s == nil {
@@ -317,17 +186,6 @@ func TaggedError(c codes.Code, tag ErrorTag, err error) error {
 func TaggedErrorf(c codes.Code, tag ErrorTag, format string, a ...interface{}) error {
 	return New(c, tag, fmt.Sprintf(format, a...))
 }
-
-// // ErrorProto returns an error representing s.  If s.Code is OK, returns nil.
-// func ErrorProto(s *spb.Status) error {
-// 	return FromProto(s).Err()
-// }
-
-// // FromProto returns a Status representing s.
-// func FromProto(s *spb.Status) *Status {
-// 	st := status.FromProto(s)
-// 	return &Status{Status: st}
-// }
 
 // FromError returns a Status representing err if it was produced from this
 // package or has a method `GRPCStatus() *Status`. Otherwise, ok is false and a
@@ -403,98 +261,6 @@ func FromContextError(err error) error {
 	}
 }
 
-// // WithErrorInfo adds the error detail to the Status
-// func (s *Status) WithErrorInfo(Reason, Path string) error {
-// 	s.Reason = Reason
-// 	s.Path
-// 	st, err := s.WithDetails(&epb.ErrorInfo{
-// 		Reason:   Reason,
-// 		Domain:   Domain,
-// 		Metadata: meta,
-// 	})
-// 	if err != nil {
-// 		return err
-// 	}
-// 	s.Status = st
-// 	return nil
-// }
-
-// // WithErrorPath adds the error Path information to the Status
-// func (s *Status) WithErrorPath(Reason, Domain, errpath string) error {
-// 	st, err := s.WithDetails(&epb.ErrorInfo{
-// 		Reason:   Reason,
-// 		Domain:   Domain,
-// 		Metadata: map[string]string{"Path": errpath},
-// 	})
-// 	if err != nil {
-// 		return err
-// 	}
-// 	s.Status = st
-// 	return nil
-// }
-
-// // ErrorDetail add error detail to the Status
-// func ErrorDetail(err error) string {
-// 	var output string
-// 	if err == nil {
-// 		return fmt.Sprintf("rpc error:\n Code = %s\n", Code(err))
-// 	}
-// 	gs, ok := err.(grpcstatus)
-// 	if !ok {
-// 		return fmt.Sprintf("rpc error:\n Code = %s\n", Code(err))
-// 	}
-// 	if gs, ok := err.(grpcstatus); ok {
-
-// 	}
-// 	for _, detail := range s.Details() {
-// 		switch t := detail.(type) {
-// 		case *errdetails.BadRequest:
-// 			output += fmt.Sprintf(" bad-request:\n")
-// 			for _, violation := range t.GetFieldViolations() {
-// 				output += fmt.Sprintf("  - %q: %s\n", violation.GetField(), violation.GetDescription())
-// 			}
-// 		case *errdetails.ErrorInfo:
-// 			output += fmt.Sprintf(" error-info:\n")
-// 			output += fmt.Sprintf("  Reason: %s\n", t.GetReason())
-// 			output += fmt.Sprintf("  Domain: %s\n", t.GetDomain())
-// 			if len(t.Metadata) > 0 {
-// 				output += fmt.Sprintf("  meta-data:\n")
-// 				for k, v := range t.GetMetadata() {
-// 					output += fmt.Sprintf("   %s: %s\n", k, v)
-// 				}
-// 			}
-// 		case *errdetails.RetryInfo:
-// 			output += fmt.Sprintf(" retry-delay: %s\n", t.GetRetryDelay())
-// 		case *errdetails.ResourceInfo:
-// 			output += fmt.Sprintf(" resouce-info:\n")
-// 			output += fmt.Sprintf("  name: %s\n", t.GetResourceName())
-// 			output += fmt.Sprintf("  type: %s\n", t.GetResourceType())
-// 			output += fmt.Sprintf("  owner: %s\n", t.GetOwner())
-// 			output += fmt.Sprintf("  desc: %s\n", t.GetDescription())
-// 		case *errdetails.RequestInfo:
-// 			output += fmt.Sprintf(" request-info:\n")
-// 			output += fmt.Sprintf("  %s: %s\n", t.GetRequestId(), t.GetServingData())
-// 		}
-// 	}
-// 	return fmt.Sprintf("rpc error:\n Code = %s\n desc = %s\n%s",
-// 		codes.Code(s.Code()), s.Message(), output)
-// }
-
-// // ErrorPath returns the error Path of the Status
-// func (s *Status) ErrorPath() string {
-// 	for _, detail := range s.Details() {
-// 		switch t := detail.(type) {
-// 		case *errdetails.ErrorInfo:
-// 			for k, v := range t.GetMetadata() {
-// 				if k == "Path" {
-// 					return v
-// 				}
-// 			}
-// 		}
-// 	}
-// 	return ""
-// }
-
 // UpdateResultError returns s's status as an spb.Status proto Message.
 func UpdateResultError(err error) *gnmipb.Error {
 	if err == nil {
@@ -505,47 +271,5 @@ func UpdateResultError(err error) *gnmipb.Error {
 		Code:    uint32(s.Code),
 		Message: fmt.Sprintf("[%s] %s", s.Tag, s.Message),
 	}
-	if s.Reason != "" || s.Domain != "" || s.Path != "" || s.SubError != nil {
-		m := map[string]string{
-			"Path": s.Path,
-		}
-		for i := range s.SubError {
-			m[fmt.Sprintf("error%d", i)] = s.SubError[i]
-		}
-		einfo := &errdetails.ErrorInfo{
-			Reason:   s.Reason,
-			Domain:   s.Domain,
-			Metadata: m,
-		}
-		if any, err := ptypes.MarshalAny(einfo); err == nil {
-			e.Data = any
-		}
-	}
 	return e
-}
-
-func WithErrorPath(err error, Path string) error {
-	s := FromError(err)
-	s.Path = Path
-	return err
-}
-
-func WithErrorReason(err error, Reason string) error {
-	s := FromError(err)
-	s.Reason = Reason
-	return err
-}
-
-func WithDomain(err error, Domain string) error {
-	s := FromError(err)
-	s.Domain = Domain
-	return err
-}
-
-func WithInfo(err error, Reason, Path, Domain string) error {
-	s := FromError(err)
-	s.Reason = Reason
-	s.Path = Path
-	s.Domain = Domain
-	return err
 }

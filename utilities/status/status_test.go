@@ -18,7 +18,6 @@ func TestStatus(t *testing.T) {
 	t.Logf("%v: %v", s.(*Status).Code, s.(*Status).Message)
 	// s = WithInfo(s, "WRONG_PATH", "/path/to/data", "127.0.0.1:13322")
 	ss := s.(*Status)
-	t.Log(ss.String())
 	gs := ss.GRPCStatus()
 	j, _ := json.Marshal(gs.Proto())
 
