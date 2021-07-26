@@ -1,14 +1,13 @@
 package server
 
 import (
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
 	"github.com/neoul/gtrie"
 	"github.com/neoul/open-gnmi/utilities/status"
 	"github.com/neoul/yangtree"
-	gyangtree "github.com/neoul/yangtree/gnmi"
-	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/openconfig/goyang/pkg/yang"
 	"google.golang.org/grpc/codes"
 )
@@ -220,23 +219,20 @@ func (s *Server) syncExec(syncpaths map[string]interface{}) {
 	s.syncCallback.SyncCallback(tosend...)
 }
 
-// syncRequest requests the data sync to the system before read.
-// Do not use server.Lock() before it because it updates the server.Root.
-func (s *Server) syncRequest(prefix *gnmipb.Path, paths []*gnmipb.Path) {
-	if s.syncCallback == nil {
-		return
-	}
-	for _, path := range paths {
-		fullpath := gyangtree.MergeGNMIPath(prefix, path)
-		if glog.V(10) {
-			glog.Infof("sync: request %q", gyangtree.ToPath(true, fullpath))
+// generateSyncPaths generates to generate all paths to be requested for sync
+func (s *Server) generateSyncPaths(sprefix string, spath []string) []string {
+	fullpaths := make([]string, 0, len(spath))
+	for i := range spath {
+		var fullpath string
+		if strings.HasPrefix(spath[i], "/") {
+			fullpath = sprefix + spath[i]
+		} else {
+			fullpath = sprefix + "/" + spath[i]
 		}
-		reqpath := gyangtree.FindPaths(s.RootSchema, fullpath)
-		for i := range reqpath {
-			syncpath := s.syncPath.SearchAll(reqpath[i], gtrie.SearchAllRelativeKey)
-			s.syncExec(syncpath)
-		}
+		fullpaths = append(fullpaths,
+			yangtree.FindAllPossiblePath(s.RootSchema, fullpath)...)
 	}
+	return fullpaths
 }
 
 // SyncRequest requests the data sync to the system before read.

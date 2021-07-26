@@ -7,7 +7,6 @@ import (
 
 	"github.com/neoul/open-gnmi/utilities/test"
 	"github.com/neoul/yangtree"
-	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 type testSync struct {
@@ -90,8 +89,8 @@ func TestSync(t *testing.T) {
 	// set the load operation as an event to register sync data.
 	s.Event.SetEvent(c, nil, nil)
 	type args struct {
-		prefix *gnmipb.Path
-		paths  []*gnmipb.Path
+		sprefix string
+		spaths  []string
 	}
 	tests := []struct {
 		name string
@@ -99,16 +98,10 @@ func TestSync(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "syncRequest 1",
+			name: "SyncRequest1",
 			args: args{
-				paths: []*gnmipb.Path{
-					&gnmipb.Path{
-						Elem: []*gnmipb.PathElem{
-							&gnmipb.PathElem{
-								Name: "interfaces",
-							},
-						},
-					},
+				spaths: []string{
+					"interfaces",
 				},
 			},
 			want: []string{
@@ -119,27 +112,10 @@ func TestSync(t *testing.T) {
 			},
 		},
 		{
-			name: "syncRequest 2",
+			name: "SyncRequest2",
 			args: args{
-				prefix: &gnmipb.Path{
-					Elem: []*gnmipb.PathElem{
-						&gnmipb.PathElem{
-							Name: "interfaces",
-						},
-					},
-				},
-				paths: []*gnmipb.Path{
-					&gnmipb.Path{
-						Elem: []*gnmipb.PathElem{
-							&gnmipb.PathElem{
-								Name: "interface",
-							},
-							&gnmipb.PathElem{
-								Name: "config",
-							},
-						},
-					},
-				},
+				sprefix: "/interfaces",
+				spaths:  []string{"interface/config"},
 			},
 			want: []string{
 				"/interfaces/interface[name=p1]/config/enabled",
@@ -147,30 +123,10 @@ func TestSync(t *testing.T) {
 			},
 		},
 		{
-			name: "syncRequest 3",
+			name: "SyncRequest3",
 			args: args{
-				prefix: &gnmipb.Path{
-					Elem: []*gnmipb.PathElem{
-						&gnmipb.PathElem{
-							Name: "interfaces",
-						},
-					},
-				},
-				paths: []*gnmipb.Path{
-					&gnmipb.Path{
-						Elem: []*gnmipb.PathElem{
-							&gnmipb.PathElem{
-								Name: "interface",
-								Key: map[string]string{
-									"name": "p1",
-								},
-							},
-							&gnmipb.PathElem{
-								Name: "config",
-							},
-						},
-					},
-				},
+				sprefix: "/interfaces",
+				spaths:  []string{"interface[name=p1]/config"},
 			},
 			want: []string{
 				"/interfaces/interface[name=p1]/config/enabled",
@@ -179,9 +135,9 @@ func TestSync(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s.syncRequest(tt.args.prefix, tt.args.paths)
+			s.SyncRequest(s.generateSyncPaths(tt.args.sprefix, tt.args.spaths))
 			if !test.IsEqualList(tsync.syncpath, tt.want) {
-				t.Errorf("syncRequest() got = %v, want %v", tsync.syncpath, tt.want)
+				t.Errorf("SyncRequest() got = %v, want %v", tsync.syncpath, tt.want)
 				for _, g := range tsync.syncpath {
 					t.Log("tsync.syncpath::", g)
 				}

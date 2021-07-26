@@ -320,6 +320,72 @@ func TestGet(t *testing.T) {
 			runTestGet(t, s, td.textPbPath, td.datatype, td.encoding, td.wantRetCode, td.wantRespVal, td.modelData)
 		})
 	}
+
+	j := `{
+		"name": "p1",
+		"config": {
+			"name": "p3",
+			"type": "iana-if-type:ethernetCsmacd",
+			"mtu": 8000,
+			"loopback-mode": false,
+			"description": "Interface#3",
+			"enabled": true
+		},
+		"state": {
+			"name": "p3",
+			"type": "iana-if-type:ethernetCsmacd",
+			"mtu": 8000,
+			"loopback-mode": false,
+			"description": "Interface#3"
+		}
+	}`
+	err = s.Write("/interfaces/interface[name=p3]", j)
+	if err != nil {
+		t.Errorf("error in writing: %s", err)
+	}
+	// o, _ := s.Root.MarshalJSON()
+	// fmt.Println(string(o))
+
+	tdata := []struct {
+		name        string
+		prefix      *gnmipb.Path
+		path        []*gnmipb.Path
+		modelData   []*gnmipb.ModelData
+		encoding    gnmipb.Encoding
+		datatype    gnmipb.GetRequest_DataType
+		wantRetCode codes.Code
+		wantRespVal interface{}
+	}{
+		{
+			name: "Get_without_path",
+			prefix: &gnmipb.Path{
+				Elem: []*gnmipb.PathElem{
+					&gnmipb.PathElem{
+						Name: "interfaces",
+					},
+				},
+			},
+			wantRetCode: codes.InvalidArgument,
+		},
+	}
+	for _, td := range tdata {
+		t.Run(td.name, func(t *testing.T) {
+			req := &gnmipb.GetRequest{
+				Prefix:    td.prefix,
+				Path:      td.path,
+				Type:      td.datatype,
+				Encoding:  td.encoding,
+				UseModels: td.modelData,
+			}
+			t.Log("req:", req)
+			resp, err := s.Get(context.Background(), req)
+			t.Log("resp:", resp, "err:", err)
+			// Check return code
+			if status.Code(err) != td.wantRetCode {
+				t.Fatalf("got return code %v, want %v", status.Code(err), td.wantRetCode)
+			}
+		})
+	}
 }
 
 // runTestGet requests a path from the server by Get grpc call, and compares if

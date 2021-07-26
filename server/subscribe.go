@@ -201,7 +201,7 @@ type Subscriber struct {
 
 	// internal data
 	fullpath []string
-	gprefix  *gnmipb.Path
+	GPrefix  *gnmipb.Path
 	session  *SubSession
 	onchange chan *changeEvent // event channel for on-change event
 	pending  *changeEvent      // event pending
@@ -579,7 +579,7 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 			}
 		}
 		if len(updates) > 0 || len(deletes) > 0 {
-			prefixAlias := subses.caliases.ToAlias(sub.gprefix, false).(*gnmipb.Path)
+			prefixAlias := subses.caliases.ToAlias(sub.GPrefix, false).(*gnmipb.Path)
 			err = subses.respchan.Send(
 				buildSubscribeResponse(prefixAlias, updates, deletes))
 			if err != nil {
@@ -663,20 +663,14 @@ func (subses *SubSession) addSubscription(name string, gprefix *gnmipb.Path, spr
 		SuppressRedundant: SuppressRedundant,
 		HeartbeatInterval: HeartbeatInterval,
 
-		gprefix:  gprefix,
+		GPrefix:  gprefix,
 		onchange: make(chan *changeEvent, 16),
 		mutex:    &sync.Mutex{},
 		session:  subses,
 		key:      key,
 	}
-	var fullpath string
-	if strings.HasPrefix(spath, "/") {
-		fullpath = sprefix + spath
-	} else {
-		fullpath = sprefix + "/" + spath
-	}
 	subscriber.fullpath = append(subscriber.fullpath,
-		yangtree.FindAllPossiblePath(subses.RootSchema, fullpath)...)
+		subses.generateSyncPaths(sprefix, []string{spath})...)
 	if Mode == gnmipb.SubscriptionList_POLL {
 		if glog.V(11) {
 			glog.Infof("subscribe[%s:%d:%d].stream[%d]:: added subscription",
@@ -766,7 +760,7 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 			subses.SyncRequest(subscriber.fullpath)
 			eventPending := subscriber.pending
 			if err := subses.initTelemetryUpdate(
-				subscriber.gprefix, subscriber.Prefix, subscriber.Path,
+				subscriber.GPrefix, subscriber.Prefix, subscriber.Path,
 				false, subscriber.Encoding, eventPending); err != nil {
 				if glog.V(11) {
 					glog.Errorf("subses[%d].poll[%d] %v", subses.ID, subscriber.ID, err)
@@ -810,7 +804,9 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 		return err
 	}
 	mode := subscriptionList.GetMode()
-	gprefix := subses.caliases.ToPath(subscriptionList.GetPrefix(), false).(*gnmipb.Path)
+	oprefix := subscriptionList.GetPrefix()
+	// convert alias to gnmi path
+	gprefix := subses.caliases.ToPath(oprefix, false).(*gnmipb.Path)
 	updatesOnly := subscriptionList.GetUpdatesOnly()
 
 	gpath := make([]*gnmipb.Path, 0, len(subList))
@@ -825,8 +821,8 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 
 	switch mode {
 	case gnmipb.SubscriptionList_ONCE:
-		subses.syncRequest(gprefix, gpath)
-		return subses.initTelemetryUpdate(gprefix, sprefix, spath, updatesOnly, encoding, nil)
+		subses.SyncRequest(subses.generateSyncPaths(sprefix, spath))
+		return subses.initTelemetryUpdate(oprefix, sprefix, spath, updatesOnly, encoding, nil)
 	case gnmipb.SubscriptionList_POLL, gnmipb.SubscriptionList_STREAM:
 		allowAggregation := subscriptionList.GetAllowAggregation()
 		startingList := make([]*Subscriber, 0, subListLength)
@@ -836,7 +832,7 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 			supressRedundant := subList[i].GetSuppressRedundant()
 			heartBeatInterval := subList[i].GetHeartbeatInterval()
 			subscriber, err := subses.addSubscription("",
-				gprefix, sprefix, spath[i],
+				oprefix, sprefix, spath[i],
 				useAliases, mode, allowAggregation,
 				encoding, submod, SampleInterval,
 				supressRedundant, heartBeatInterval)
@@ -845,19 +841,18 @@ func (subses *SubSession) processSubscribeRequest(req *gnmipb.SubscribeRequest) 
 			}
 			startingList = append(startingList, subscriber)
 		}
-		if mode == gnmipb.SubscriptionList_STREAM {
-			subses.syncRequest(gprefix, gpath)
-			if err := subses.initTelemetryUpdate(
-				gprefix, sprefix, spath, updatesOnly, encoding, nil); err != nil {
-				return err
-			}
-		}
 		for _, subscriber := range startingList {
 			subses.addDynamicSubscription(subscriber)
 			subses.Event.Register(subscriber)
 			switch subscriber.Mode {
 			case gnmipb.SubscriptionList_POLL:
 			case gnmipb.SubscriptionList_STREAM:
+				subses.SyncRequest(subscriber.fullpath)
+				if err := subses.initTelemetryUpdate(
+					subscriber.GPrefix, subscriber.Prefix, subscriber.Path,
+					updatesOnly, subscriber.Encoding, nil); err != nil {
+					return err
+				}
 				if !subscriber.started {
 					subscriber.started = true
 					subses.waitgroup.Add(1)

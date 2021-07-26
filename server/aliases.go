@@ -259,6 +259,13 @@ func (caliases *clientAliases) ToAlias(path interface{}, diffFormat bool) interf
 	defer caliases.mutex.RUnlock()
 	switch _path := path.(type) {
 	case *gnmipb.Path:
+		if _path == nil || len(_path.Elem) == 0 {
+			return path
+		}
+		if strings.HasPrefix(_path.Elem[0].Name, "#") {
+			// already converted
+			return path
+		}
 		_, p, _ := gyangtree.ToValidDataPath(caliases.schema, _path)
 		if ca, ok := caliases.Path2Alias[p]; ok {
 			if diffFormat {
@@ -271,6 +278,13 @@ func (caliases *clientAliases) ToAlias(path interface{}, diffFormat bool) interf
 		}
 		return _path
 	case string:
+		if _path == "" {
+			return path
+		}
+		if strings.HasPrefix(_path, "#") {
+			// already converted
+			return path
+		}
 		if ca, ok := caliases.Path2Alias[_path]; ok {
 			if diffFormat {
 				return newGNMIAliasPath(ca.Name, "", "")
