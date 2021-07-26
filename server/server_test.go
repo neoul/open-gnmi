@@ -114,18 +114,22 @@ func TestGet(t *testing.T) {
 		desc        string
 		textPbPath  string
 		modelData   []*gnmipb.ModelData
+		encoding    gnmipb.Encoding
+		datatype    gnmipb.GetRequest_DataType
 		wantRetCode codes.Code
 		wantRespVal interface{}
 	}{
 		{
 			desc: "get valid but non-existing node",
 			textPbPath: `
-			elem: <name: "system" >
-		`,
+				elem: <name: "system" >
+			`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.NotFound,
 		},
 		{
 			desc:        "root node",
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: jstr,
 		},
@@ -137,8 +141,41 @@ func TestGet(t *testing.T) {
 					elem: <name: "message" >
 					elem: <name: "priority" >
 				`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: uint64(10),
+		},
+		{
+			desc:        "get_state_data",
+			textPbPath:  `elem: <name: "messages" >`,
+			datatype:    gnmipb.GetRequest_STATE,
+			encoding:    gnmipb.Encoding_JSON,
+			wantRetCode: codes.OK,
+			wantRespVal: `
+					{
+						"state": {
+							"message": {
+								"msg": "Messages presents here.",
+								"priority": 10
+							},
+							"severity": "ERROR"
+						}
+					}
+				`,
+		},
+		{
+			desc:        "get_conf_data",
+			textPbPath:  `elem: <name: "messages" >`,
+			datatype:    gnmipb.GetRequest_CONFIG,
+			encoding:    gnmipb.Encoding_JSON,
+			wantRetCode: codes.OK,
+			wantRespVal: `
+					{
+						"config": {
+							"severity": "ERROR"
+						}
+					}
+				`,
 		},
 		{
 			desc: "get enum type",
@@ -147,12 +184,14 @@ func TestGet(t *testing.T) {
 					elem: <name: "state" >
 					elem: <name: "severity" >
 				`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: "ERROR",
 		},
 		{
 			desc:        "root child node",
 			textPbPath:  `elem: <name: "interfaces" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: `{
 						"openconfig-interfaces:interface": [
@@ -189,6 +228,7 @@ func TestGet(t *testing.T) {
 									name: "interface"
 									key: <key: "name" value: "p1" >
 								>`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: `{
 				"openconfig-interfaces:name": "p1",
@@ -212,6 +252,7 @@ func TestGet(t *testing.T) {
 								>
 								elem: <name: "config" >
 								elem: <name: "type" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: `ethernetCsmacd`,
 		},
@@ -224,6 +265,7 @@ func TestGet(t *testing.T) {
 									key: <key: "name" value: "p1" >
 								>
 								elem: <name: "name" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: "p1",
 		},
@@ -237,6 +279,7 @@ func TestGet(t *testing.T) {
 								>
 								elem: <name: "config" >
 								elem: <name: "name" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.OK,
 			wantRespVal: "p1",
 		},
@@ -249,6 +292,7 @@ func TestGet(t *testing.T) {
 									key: <key: "name" value: "p1" >
 								>
 								elem: <name: "bar" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.InvalidArgument,
 		},
 		{
@@ -260,25 +304,29 @@ func TestGet(t *testing.T) {
 									key: <key: "foo" value: "p1" >
 								>
 								elem: <name: "name" >`,
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.InvalidArgument,
 		},
 		{
 			desc:        "invalid supported model data",
 			modelData:   []*gnmipb.ModelData{&gnmipb.ModelData{}},
+			encoding:    gnmipb.Encoding_JSON_IETF,
 			wantRetCode: codes.InvalidArgument,
 		},
 	}
 
 	for _, td := range tds {
 		t.Run(td.desc, func(t *testing.T) {
-			runTestGet(t, s, td.textPbPath, td.wantRetCode, td.wantRespVal, td.modelData)
+			runTestGet(t, s, td.textPbPath, td.datatype, td.encoding, td.wantRetCode, td.wantRespVal, td.modelData)
 		})
 	}
 }
 
 // runTestGet requests a path from the server by Get grpc call, and compares if
 // the return code and response value are expected.
-func runTestGet(t *testing.T, s *Server, textPbPath string, wantRetCode codes.Code, wantRespVal interface{}, useModels []*gnmipb.ModelData) {
+func runTestGet(t *testing.T, s *Server, textPbPath string,
+	datatype gnmipb.GetRequest_DataType, encoding gnmipb.Encoding,
+	wantRetCode codes.Code, wantRespVal interface{}, useModels []*gnmipb.ModelData) {
 	// Send request
 	var pbPath gnmipb.Path
 	if err := proto.UnmarshalText(textPbPath, &pbPath); err != nil {
@@ -286,7 +334,8 @@ func runTestGet(t *testing.T, s *Server, textPbPath string, wantRetCode codes.Co
 	}
 	req := &gnmipb.GetRequest{
 		Path:      []*gnmipb.Path{&pbPath},
-		Encoding:  gnmipb.Encoding_JSON_IETF,
+		Type:      datatype,
+		Encoding:  encoding,
 		UseModels: useModels,
 	}
 	t.Log("req:", req)
@@ -313,19 +362,28 @@ func runTestGet(t *testing.T, s *Server, textPbPath string, wantRetCode codes.Co
 		if val == nil {
 			return
 		}
-		if val.GetJsonIetfVal() == nil {
+
+		var jsonbytes []byte
+		switch {
+		case val.GetJsonIetfVal() != nil:
+			jsonbytes = val.GetJsonIetfVal()
+		case val.GetJsonVal() != nil:
+			jsonbytes = val.GetJsonVal()
+		}
+
+		if len(jsonbytes) == 0 {
 			gotVal, err = value.ToScalar(val)
 			if err != nil {
 				t.Errorf("got: %v, want a scalar value", gotVal)
 			}
 		} else {
 			// Unmarshal json data to gotVal container for comparison
-			if err := json.Unmarshal(val.GetJsonIetfVal(), &gotVal); err != nil {
-				t.Fatalf("error in unmarshaling IETF JSON data to json container: %v", err)
+			if err := json.Unmarshal(jsonbytes, &gotVal); err != nil {
+				t.Fatalf("error in unmarshaling JSON data to json val: %v", err)
 			}
 			var wantJSONStruct interface{}
 			if err := json.Unmarshal([]byte(wantRespVal.(string)), &wantJSONStruct); err != nil {
-				t.Fatalf("error in unmarshaling IETF JSON data to json container: %v", err)
+				t.Fatalf("error in unmarshaling JSON data to json val: %v", err)
 			}
 			wantRespVal = wantJSONStruct
 		}

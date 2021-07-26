@@ -429,7 +429,7 @@ func (s *Server) capabilities(ctx context.Context, req *gnmipb.CapabilityRequest
 // Get returns the GetResponse for the GetRequest.
 // Error in Get RPC
 //  - Invalid path: InvalidArgument if the path format is invalid or the schema node of the path is not found
-//  - [FIXME] type[CONFIG, STATE, OPERATIONAL]: Unimplemented if set (Not supported feature)
+//  - type[OPERATIONAL]: Unimplemented (not supported feature)
 //  - Encoding: Unimplemented if unsupported encoding
 //  - uses_models: InvalidArgument if the used model name is an empty string, Unimplemented if the model is not supported
 //  - No data instance: NotFound if the data doesn’t exist
@@ -467,7 +467,7 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 		findopt = append(findopt, yangtree.StateOnly{})
 	}
 
-	branches, err := yangtree.Find(s.Root, sprefix, findopt...)
+	branches, err := yangtree.Find(s.Root, sprefix)
 	if err != nil { // finding error
 		return nil, status.TaggedErrorf(codes.InvalidArgument, status.TagInvalidPath,
 			"error in finding: %v", err)
@@ -481,7 +481,7 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 	notifications := make([]*gnmipb.Notification, 0, len(branches)*len(spath))
 	for _, branch := range branches {
 		for i := range spath {
-			node, err := yangtree.Find(branch, spath[i], findopt...)
+			node, err := yangtree.Find(branch, spath[i])
 			if err != nil || len(node) <= 0 {
 				rerr = status.TaggedErrorf(codes.NotFound, status.TagDataMissing,
 					"data not found from %v", sprefix)
@@ -490,7 +490,7 @@ func (s *Server) get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 
 			update := make([]*gnmipb.Update, 0, len(node))
 			for _, data := range node {
-				typedValue, err := gyangtree.DataNodeToTypedValue(data, req.GetEncoding())
+				typedValue, err := gyangtree.DataNodeToTypedValue(data, req.GetEncoding(), findopt...)
 				if err != nil {
 					return nil, status.TaggedErrorf(codes.Internal, status.TagBadData,
 						"typed-value encoding error in %s: %v", data.Path(), err)
