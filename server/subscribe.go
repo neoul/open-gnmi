@@ -486,7 +486,16 @@ func (subses *SubSession) initTelemetryUpdate(
 
 	branches, err := yangtree.Find(subses.Root, sprefix)
 	if err != nil || len(branches) <= 0 {
-		// [FIXME] send deletes regardless of the branch.
+		if deletes, err := getDeletes("/", false, event); err != nil {
+			return err
+		} else if len(deletes) > 0 {
+			prefixAlias := subses.caliases.ToAlias(gprefix, false).(*gnmipb.Path)
+			err = subses.respchan.Send(
+				buildSubscribeResponse(prefixAlias, nil, deletes))
+			if err != nil {
+				return err
+			}
+		}
 		return subses.respchan.Send(buildSyncResponse())
 	}
 
@@ -546,7 +555,16 @@ func (subses *SubSession) telemetryUpdate(sub *Subscriber, event *changeEvent) e
 	defer subses.RUnlock()
 	branches, err := yangtree.Find(root, prefix)
 	if err != nil || len(branches) <= 0 {
-		// [FIXME] send deletes regardless of the branch.
+		if deletes, err := getDeletes("/", false, event); err != nil {
+			return err
+		} else if len(deletes) > 0 {
+			prefixAlias := subses.caliases.ToAlias(sub.GPrefix, false).(*gnmipb.Path)
+			err = subses.respchan.Send(
+				buildSubscribeResponse(prefixAlias, nil, deletes))
+			if err != nil {
+				return err
+			}
+		}
 		// data-missing is not an error in SubscribeRPC
 		// does not send any of messages.
 		return nil

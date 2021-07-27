@@ -186,6 +186,7 @@ func newIfStats(ifinfo string) *ifStats {
 
 func collectIfstats(name string) ([]*ifStats, error) {
 	if name == "" {
+		glog.Info("collecting all ifstats")
 		output, err := exec.Command("ifconfig", "-a").Output()
 		if err != nil {
 			return nil, err

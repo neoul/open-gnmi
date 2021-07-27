@@ -15,6 +15,12 @@ The data returned in a SubscribeResponse message would become ambiguous because 
 ## TODO
 
 - The parent node shold be removed if the parent node is created at update or replace RPC.
-
-
 - Path Target: Only set to the prefix
+
+## Sample gNMI Target
+
+```bash
+cd target
+go build
+./target -b :57400 --alsologtostderr --sample-interval 5s -v 100
+```

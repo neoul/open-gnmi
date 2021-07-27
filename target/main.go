@@ -31,7 +31,7 @@ var (
 	crt             = pflag.String("server-crt", "", "server certificate file")
 	key             = pflag.String("server-key", "", "server private key file")
 	skipVerify      = pflag.Bool("skip-verify", false, "skip tls connection verfication")
-	insecure        = pflag.Bool("insecure", false, "disable tls (transport layer security) to run grpc insecure mode")
+	insecure        = pflag.Bool("insecure", true, "disable tls (transport layer security) to run grpc insecure mode")
 	yang            = pflag.StringArray("yang", []string{}, "yang files to be loaded")
 	dir             = pflag.StringArray("dir", []string{}, "directories to search yang includes and imports")
 	excludes        = pflag.StringArray("exclude", []string{}, "yang modules to be excluded from path generation")
@@ -67,6 +67,11 @@ func main() {
 		pflag.PrintDefaults()
 		fmt.Fprintf(pflag.CommandLine.Output(), "\n")
 		os.Exit(1)
+	}
+	if glog.V(1) {
+		pflag.VisitAll(func(f *pflag.Flag) {
+			glog.Infof("- %v=%v\n", f.Name, f.Value)
+		})
 	}
 
 	// Create the subsystem that collects and populates the system data.
