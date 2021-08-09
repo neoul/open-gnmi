@@ -31,7 +31,7 @@ func testModels() ([]string, []string, []string) {
 		"../../../openconfig/public/release/models/openflow/openconfig-openflow.yang",
 		"../../../openconfig/public/release/models/platform/openconfig-platform.yang",
 		"../../../openconfig/public/release/models/system/openconfig-system.yang",
-		"../../../neoul/yangtree/data/sample/sample.yang",
+		"../../../neoul/yangtree/testdata/sample/sample.yang",
 	}
 	dir := []string{"../../../openconfig/public/", "../../../YangModels/yang"}
 	excluded := []string{"ietf-interfaces"}
