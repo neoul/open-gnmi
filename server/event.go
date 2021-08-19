@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/golang/glog"
@@ -71,6 +72,12 @@ func newEventCtrl(schema *yang.Entry) *EventCtrl {
 		rootschema: schema,
 		mutex:      &sync.Mutex{},
 	}
+}
+
+func (ec *EventCtrl) String() string {
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("%v", ec.receivers.All()))
+	return buf.String()
 }
 
 // Register() is used to register an EventReceiver. During the registration,
@@ -178,7 +185,9 @@ func (ec *EventCtrl) setReady(event EventType, node []yangtree.DataNode) error {
 		schema := node[i].Schema()
 		if yangtree.HasUniqueListParent(schema) {
 			schemapath := yangtree.GeneratePath(schema, false, false)
+			fmt.Println(schemapath)
 			for _, group := range ec.receivers.FindAll(schemapath) {
+
 				egroup := group.(EventRecvGroup)
 				for eReceiver := range egroup {
 					if _, ok := ec.ready[eReceiver]; !ok {
